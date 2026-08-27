@@ -1,13 +1,10 @@
-from __future__ import annotations
-
 import os
 from datetime import datetime, timezone
-from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean
 from sqlalchemy.orm import declarative_base, sessionmaker, Session
 
@@ -80,6 +77,7 @@ class LivreurDB(Base):
     mot_de_passe = Column(String, nullable=False)
     nb_commandes_en_cours = Column(Integer, default=0)
     taux_par_livraison = Column(Float, default=0)
+    disponible = Column(Boolean, default=True)
 
 
 class CompteGerantDB(Base):
@@ -105,6 +103,7 @@ class CommandeDB(Base):
     date_assignation = Column(String, nullable=True)
     date_depart = Column(String, nullable=True)
     date_livraison = Column(String, nullable=True)
+    probleme_motif = Column(String, nullable=True)
 
 
 class ReapprovisionnementDB(Base):
@@ -195,9 +194,7 @@ def enregistrer_mouvement(db: Session, produit_id: int, type_mouvement: str, del
     db.add(MouvementStockDB(produit_id=produit_id, type=type_mouvement, delta=delta, motif=motif, date=maintenant()))
 
 
-def dans_periode(date_str: str, date_debut: Optional[str], date_fin: Optional[str]) -> bool:
-    if not date_str:
-        return False
+def dans_periode(date_str: str, date_debut: str | None, date_fin: str | None) -> bool:
     jour = date_str[:10]
     if date_debut and jour < date_debut:
         return False
@@ -213,13 +210,15 @@ def d_produit(p): return {"id": p.id, "nom": p.nom, "prix": p.prix, "quantite_st
 
 def d_livreur(l): return {"id": l.id, "nom": l.nom, "identifiant": l.identifiant,
                            "mot_de_passe": l.mot_de_passe, "nb_commandes_en_cours": l.nb_commandes_en_cours,
-                           "taux_par_livraison": l.taux_par_livraison}
+                           "taux_par_livraison": l.taux_par_livraison, "disponible": l.disponible}
 
 def d_commande(c): return {"id": c.id, "produit_id": c.produit_id, "qte": c.qte, "residence": c.residence,
-                            "numero_chambre": c.numero_chambre, "adresse": c.adresse, "statut": c.statut,
+                            "numero_chambre": c.numero_chambre,
+                            "adresse": c.adresse, "statut": c.statut,
                             "livreur_id": c.livreur_id, "cout_unitaire": c.cout_unitaire,
                             "date_creation": c.date_creation, "date_assignation": c.date_assignation,
-                            "date_depart": c.date_depart, "date_livraison": c.date_livraison}
+                            "date_depart": c.date_depart, "date_livraison": c.date_livraison,
+                            "probleme_motif": c.probleme_motif}
 
 def d_reappro(r): return {"id": r.id, "produit_id": r.produit_id, "quantite": r.quantite,
                            "cout_total": r.cout_total, "date": r.date}
@@ -242,7 +241,7 @@ class LoginRequest(BaseModel):
 
 class NouvelleCommande(BaseModel):
     produit_id: int
-    qte: int = Field(gt=0)
+    qte: int
     residence: int
     numero_chambre: str
 
@@ -267,10 +266,17 @@ class NouveauLivreur(BaseModel):
     taux_par_livraison: float = 0
 
 class ModifierLivreur(BaseModel):
-    nom: Optional[str] = None
-    identifiant: Optional[str] = None
-    mot_de_passe: Optional[str] = None
-    taux_par_livraison: Optional[float] = None
+    nom: str | None = None
+    identifiant: str | None = None
+    mot_de_passe: str | None = None
+    taux_par_livraison: float | None = None
+    disponible: bool | None = None
+
+class Disponibilite(BaseModel):
+    disponible: bool
+
+class SignalerProbleme(BaseModel):
+    motif: str
 
 class ChangerMotDePasseGerant(BaseModel):
     mot_de_passe_actuel: str
@@ -281,14 +287,14 @@ class NouveauProduit(BaseModel):
     prix: float
     seuil_alerte: int = 5
     quantite_stock: int = 0
-    categorie: Optional[str] = None
+    categorie: str | None = None
 
 class ModifierProduit(BaseModel):
-    nom: Optional[str] = None
-    prix: Optional[float] = None
-    seuil_alerte: Optional[int] = None
-    categorie: Optional[str] = None
-    actif: Optional[bool] = None
+    nom: str | None = None
+    prix: float | None = None
+    seuil_alerte: int | None = None
+    categorie: str | None = None
+    actif: bool | None = None
 
 
 # ====== AUTHENTIFICATION ======
@@ -309,8 +315,6 @@ def login(data: LoginRequest, db: Session = Depends(get_db)):
 @app.patch("/compte-gerant/mot-de-passe")
 def changer_mot_de_passe_gerant(data: ChangerMotDePasseGerant, db: Session = Depends(get_db)):
     compte = db.query(CompteGerantDB).first()
-    if not compte:
-        raise HTTPException(404, "Compte gérant introuvable")
     if data.mot_de_passe_actuel != compte.mot_de_passe:
         raise HTTPException(401, "Mot de passe actuel incorrect")
     if len(data.nouveau_mot_de_passe) < 4:
@@ -338,7 +342,7 @@ def creer_produit(data: NouveauProduit, db: Session = Depends(get_db)):
 
 @app.patch("/produits/{produit_id}")
 def modifier_produit(produit_id: int, data: ModifierProduit, db: Session = Depends(get_db)):
-    p = db.get(ProduitDB, produit_id)
+    p = db.query(ProduitDB).get(produit_id)
     if not p:
         raise HTTPException(404, "Produit introuvable")
     if data.nom is not None: p.nom = data.nom.strip()
@@ -351,7 +355,7 @@ def modifier_produit(produit_id: int, data: ModifierProduit, db: Session = Depen
 
 @app.delete("/produits/{produit_id}")
 def supprimer_produit(produit_id: int, db: Session = Depends(get_db)):
-    p = db.get(ProduitDB, produit_id)
+    p = db.query(ProduitDB).get(produit_id)
     if not p:
         raise HTTPException(404, "Produit introuvable")
     db.delete(p); db.commit()
@@ -359,7 +363,7 @@ def supprimer_produit(produit_id: int, db: Session = Depends(get_db)):
 
 @app.patch("/produits/{produit_id}/stock")
 def update_stock(produit_id: int, data: StockUpdate, db: Session = Depends(get_db)):
-    p = db.get(ProduitDB, produit_id)
+    p = db.query(ProduitDB).get(produit_id)
     if not p:
         raise HTTPException(404, "Produit introuvable")
     ancien = p.quantite_stock
@@ -373,7 +377,7 @@ def update_stock(produit_id: int, data: StockUpdate, db: Session = Depends(get_d
 
 # ====== HISTORIQUE DES MOUVEMENTS DE STOCK ======
 @app.get("/mouvements-stock")
-def get_mouvements_stock(produit_id: Optional[int] = None, db: Session = Depends(get_db)):
+def get_mouvements_stock(produit_id: int | None = None, db: Session = Depends(get_db)):
     q = db.query(MouvementStockDB)
     if produit_id is not None:
         q = q.filter_by(produit_id=produit_id)
@@ -387,7 +391,7 @@ def get_reapprovisionnements(db: Session = Depends(get_db)):
 
 @app.post("/reapprovisionnements")
 def creer_reapprovisionnement(data: Reapprovisionnement, db: Session = Depends(get_db)):
-    p = db.get(ProduitDB, data.produit_id)
+    p = db.query(ProduitDB).get(data.produit_id)
     if not p:
         raise HTTPException(404, "Produit introuvable")
     if data.quantite <= 0 or data.cout_total <= 0:
@@ -426,7 +430,7 @@ def creer_livreur(data: NouveauLivreur, db: Session = Depends(get_db)):
 
 @app.patch("/livreurs/{livreur_id}")
 def modifier_livreur(livreur_id: int, data: ModifierLivreur, db: Session = Depends(get_db)):
-    l = db.get(LivreurDB, livreur_id)
+    l = db.query(LivreurDB).get(livreur_id)
     if not l:
         raise HTTPException(404, "Livreur introuvable")
     if data.identifiant is not None:
@@ -441,12 +445,24 @@ def modifier_livreur(livreur_id: int, data: ModifierLivreur, db: Session = Depen
         l.mot_de_passe = data.mot_de_passe
     if data.taux_par_livraison is not None:
         l.taux_par_livraison = data.taux_par_livraison
+    if data.disponible is not None:
+        l.disponible = data.disponible
+    db.commit()
+    return d_livreur(l)
+
+@app.post("/livreurs/{livreur_id}/disponibilite")
+def changer_disponibilite(livreur_id: int, data: Disponibilite, db: Session = Depends(get_db)):
+    """Le livreur signale lui-même s'il est disponible ou en pause — l'assignation auto en tient compte."""
+    l = db.query(LivreurDB).get(livreur_id)
+    if not l:
+        raise HTTPException(404, "Livreur introuvable")
+    l.disponible = data.disponible
     db.commit()
     return d_livreur(l)
 
 @app.delete("/livreurs/{livreur_id}")
 def supprimer_livreur(livreur_id: int, db: Session = Depends(get_db)):
-    l = db.get(LivreurDB, livreur_id)
+    l = db.query(LivreurDB).get(livreur_id)
     if not l:
         raise HTTPException(404, "Livreur introuvable")
     if l.nb_commandes_en_cours > 0:
@@ -458,24 +474,12 @@ def supprimer_livreur(livreur_id: int, db: Session = Depends(get_db)):
 # ====== CONFIG ======
 @app.get("/config")
 def get_config(db: Session = Depends(get_db)):
-    cfg = db.query(ConfigDB).first()
-    if not cfg:
-        cfg = ConfigDB(mode_assignation="manuel")
-        db.add(cfg)
-        db.commit()
-        db.refresh(cfg)
-    return {"mode_assignation": cfg.mode_assignation}
+    return {"mode_assignation": db.query(ConfigDB).first().mode_assignation}
 
 @app.put("/config")
 def set_config(data: ModeConfig, db: Session = Depends(get_db)):
-    if data.mode_assignation not in ("manuel", "auto"):
-        raise HTTPException(400, "mode_assignation doit être 'manuel' ou 'auto'")
     cfg = db.query(ConfigDB).first()
-    if not cfg:
-        cfg = ConfigDB(mode_assignation=data.mode_assignation)
-        db.add(cfg)
-    else:
-        cfg.mode_assignation = data.mode_assignation
+    cfg.mode_assignation = data.mode_assignation
     db.commit()
     return {"mode_assignation": cfg.mode_assignation}
 
@@ -488,11 +492,14 @@ def get_commandes(db: Session = Depends(get_db)):
 
 def assigner_commandes_en_attente(db: Session):
     cfg = db.query(ConfigDB).first()
-    if not cfg or cfg.mode_assignation != "auto":
+    if cfg.mode_assignation != "auto":
         return
     en_attente = db.query(CommandeDB).filter_by(statut="en_attente").order_by(CommandeDB.id).all()
     for c in en_attente:
-        dispo = db.query(LivreurDB).filter(LivreurDB.nb_commandes_en_cours < MAX_COMMANDES_LIVREUR).first()
+        dispo = db.query(LivreurDB).filter(
+            LivreurDB.nb_commandes_en_cours < MAX_COMMANDES_LIVREUR,
+            LivreurDB.disponible == True,
+        ).first()
         if not dispo:
             break
         c.livreur_id = dispo.id
@@ -504,17 +511,17 @@ def assigner_commandes_en_attente(db: Session):
 
 @app.post("/commandes")
 def creer_commande(data: NouvelleCommande, db: Session = Depends(get_db)):
-    p = db.get(ProduitDB, data.produit_id)
+    p = db.query(ProduitDB).get(data.produit_id)
     if not p:
         raise HTTPException(404, "Produit introuvable")
     if data.qte > p.quantite_stock:
         raise HTTPException(400, "Stock insuffisant")
-    if not data.numero_chambre.strip():
-        raise HTTPException(400, "Le numéro de chambre est obligatoire")
 
     p.quantite_stock -= data.qte
 
     chambre = data.numero_chambre.strip()
+    if not chambre:
+        raise HTTPException(400, "Le numéro de chambre est obligatoire")
     c = CommandeDB(
         produit_id=data.produit_id, qte=data.qte, residence=data.residence, numero_chambre=chambre,
         adresse=f"Résidence {data.residence}, Chambre {chambre}",
@@ -532,12 +539,10 @@ def creer_commande(data: NouvelleCommande, db: Session = Depends(get_db)):
 
 @app.post("/commandes/{commande_id}/assigner")
 def assigner_commande(commande_id: int, data: AssignationLivreur, db: Session = Depends(get_db)):
-    c = db.get(CommandeDB, commande_id)
-    l = db.get(LivreurDB, data.livreur_id)
+    c = db.query(CommandeDB).get(commande_id)
+    l = db.query(LivreurDB).get(data.livreur_id)
     if not c or not l:
         raise HTTPException(404, "Commande ou livreur introuvable")
-    if c.statut != "en_attente":
-        raise HTTPException(400, "La commande n'est pas en attente")
     if l.nb_commandes_en_cours >= MAX_COMMANDES_LIVREUR:
         raise HTTPException(400, "Ce livreur a déjà trop de commandes en cours")
 
@@ -551,7 +556,7 @@ def assigner_commande(commande_id: int, data: AssignationLivreur, db: Session = 
 
 @app.post("/commandes/{commande_id}/demarrer")
 def demarrer_livraison(commande_id: int, db: Session = Depends(get_db)):
-    c = db.get(CommandeDB, commande_id)
+    c = db.query(CommandeDB).get(commande_id)
     if not c:
         raise HTTPException(404, "Commande introuvable")
     if c.statut != "assignee":
@@ -564,15 +569,13 @@ def demarrer_livraison(commande_id: int, db: Session = Depends(get_db)):
 
 @app.post("/commandes/{commande_id}/livrer")
 def marquer_livree(commande_id: int, db: Session = Depends(get_db)):
-    c = db.get(CommandeDB, commande_id)
+    c = db.query(CommandeDB).get(commande_id)
     if not c:
         raise HTTPException(404, "Commande introuvable")
-    if c.statut != "en_livraison":
-        raise HTTPException(400, "La commande n'est pas en cours de livraison")
     c.statut = "livree"
     c.date_livraison = maintenant()
     if c.livreur_id:
-        l = db.get(LivreurDB, c.livreur_id)
+        l = db.query(LivreurDB).get(c.livreur_id)
         if l:
             l.nb_commandes_en_cours -= 1
             if l.taux_par_livraison > 0:
@@ -580,6 +583,27 @@ def marquer_livree(commande_id: int, db: Session = Depends(get_db)):
     db.commit()
 
     assigner_commandes_en_attente(db)
+    db.refresh(c)
+    return d_commande(c)
+
+
+@app.post("/commandes/{commande_id}/probleme")
+def signaler_probleme(commande_id: int, data: SignalerProbleme, db: Session = Depends(get_db)):
+    """Le livreur signale un souci (client absent, adresse introuvable...) : la commande
+    retourne au gérant (en_attente) pour être réassignée, et le motif reste visible."""
+    c = db.query(CommandeDB).get(commande_id)
+    if not c:
+        raise HTTPException(404, "Commande introuvable")
+    if c.livreur_id:
+        l = db.query(LivreurDB).get(c.livreur_id)
+        if l:
+            l.nb_commandes_en_cours = max(0, l.nb_commandes_en_cours - 1)
+    c.probleme_motif = data.motif
+    c.statut = "en_attente"
+    c.livreur_id = None
+    c.date_assignation = None
+    c.date_depart = None
+    db.commit()
     db.refresh(c)
     return d_commande(c)
 
@@ -592,21 +616,28 @@ def itineraire_livreur(livreur_id: int, db: Session = Depends(get_db)):
         CommandeDB.statut.in_(["assignee", "en_livraison"])
     ).all()
 
+    # Estimation grossière : les unités de coordonnées ne sont pas de vraies distances GPS,
+    # donc ce temps est une approximation relative (utile pour comparer les arrêts entre eux,
+    # pas une durée garantie). À affiner quand on aura les vraies coordonnées GPS.
+    MINUTES_PAR_UNITE = 3
+
     restant = list(actives)
     position = RESIDENCES_COORDS[DEPOT_RESIDENCE]
     ordre = []
     while restant:
         plus_proche = min(restant, key=lambda c: distance(position, RESIDENCES_COORDS.get(c.residence, position)))
-        ordre.append(plus_proche)
+        d = distance(position, RESIDENCES_COORDS.get(plus_proche.residence, position))
+        ordre.append((plus_proche, round(d * MINUTES_PAR_UNITE, 1)))
         position = RESIDENCES_COORDS.get(plus_proche.residence, position)
         restant.remove(plus_proche)
 
-    return [{"ordre": i + 1, "commande_id": c.id, "residence": c.residence} for i, c in enumerate(ordre)]
+    return [{"ordre": i + 1, "commande_id": c.id, "residence": c.residence, "temps_estime_minutes": t}
+            for i, (c, t) in enumerate(ordre)]
 
 
 # ====== STATISTIQUES ======
 @app.get("/stats/commandes")
-def stats_commandes(date_debut: Optional[str] = None, date_fin: Optional[str] = None, db: Session = Depends(get_db)):
+def stats_commandes(date_debut: str | None = None, date_fin: str | None = None, db: Session = Depends(get_db)):
     commandes = [c for c in db.query(CommandeDB).all() if dans_periode(c.date_creation, date_debut, date_fin)]
     produits = {p.id: p for p in db.query(ProduitDB).all()}
 
@@ -667,7 +698,7 @@ def stats_gaspillage(db: Session = Depends(get_db)):
     resultat = []
     for p in produits:
         mouvements = db.query(MouvementStockDB).filter_by(produit_id=p.id).all()
-        approvisionne = sum(m.delta for m in mouvements if m.delta > 0 and m.type == "reapprovisionnement")
+        approvisionne = sum(m.delta for m in mouvements if m.delta > 0)
         perdu = sum(-m.delta for m in mouvements if m.type == "perte")
         taux = round(perdu / approvisionne * 100, 1) if approvisionne > 0 else 0
         resultat.append({
@@ -677,8 +708,8 @@ def stats_gaspillage(db: Session = Depends(get_db)):
     return sorted(resultat, key=lambda r: r["taux_gaspillage_pct"], reverse=True)
 
 
-# Séparation de la logique métier de la dépendance FastAPI
-def _stats_finance(db: Session, date_debut: Optional[str], date_fin: Optional[str]):
+@app.get("/stats/finance")
+def stats_finance(date_debut: str | None = None, date_fin: str | None = None, db: Session = Depends(get_db)):
     produits = {p.id: p for p in db.query(ProduitDB).all()}
     livreurs = {l.id: l for l in db.query(LivreurDB).all()}
 
@@ -734,6 +765,7 @@ def _stats_finance(db: Session, date_debut: Optional[str], date_fin: Optional[st
             marges.append({"produit": p.nom, "marge_pct": round((p.prix - p.prix_achat_moyen) / p.prix * 100, 1)})
 
     # Solde de caisse réel : argent encaissé moins argent réellement décaissé
+    # (les pertes ne sont PAS un mouvement de caisse : l'argent a déjà été payé au réapprovisionnement)
     solde_caisse = round(total_revenu - total_cout_reappro - total_cout_livreurs, 2)
 
     return {
@@ -749,11 +781,6 @@ def _stats_finance(db: Session, date_debut: Optional[str], date_fin: Optional[st
         "marges": marges,
         "transactions": transactions,
     }
-
-
-@app.get("/stats/finance")
-def stats_finance_endpoint(date_debut: Optional[str] = None, date_fin: Optional[str] = None, db: Session = Depends(get_db)):
-    return _stats_finance(db, date_debut, date_fin)
 
 
 @app.get("/stats/livreurs")
@@ -821,9 +848,9 @@ def get_paiements_livreurs(db: Session = Depends(get_db)):
 
 
 @app.get("/stats/finance/export-csv")
-def export_finance_csv(date_debut: Optional[str] = None, date_fin: Optional[str] = None, db: Session = Depends(get_db)):
+def export_finance_csv(date_debut: str | None = None, date_fin: str | None = None, db: Session = Depends(get_db)):
     import csv, io
-    data = _stats_finance(db, date_debut, date_fin)
+    data = stats_finance(date_debut=date_debut, date_fin=date_fin, db=db)
     buffer = io.StringIO()
     writer = csv.writer(buffer)
     writer.writerow(["Date", "Type", "Produit", "Quantité", "Montant (F)", "Coût (F)", "Bénéfice (F)"])
