@@ -5,7 +5,7 @@ from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel
-from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean
+from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, inspect, text
 from sqlalchemy.orm import declarative_base, sessionmaker, Session
 
 # ====== CONNEXION À LA BASE DE DONNÉES ======
@@ -153,6 +153,41 @@ class PaiementLivreurDB(Base):
 
 
 Base.metadata.create_all(bind=engine)
+
+
+def migrer_schema():
+    """create_all() crée les tables manquantes mais NE MODIFIE JAMAIS une table existante.
+    Cette fonction complète : elle vérifie, colonne par colonne, ce qui manque sur les
+    tables déjà présentes (ex: après une mise à jour du code) et l'ajoute automatiquement,
+    sans toucher aux données déjà enregistrées. À maintenir à chaque nouvelle colonne ajoutée
+    à un modèle existant."""
+    colonnes_attendues = {
+        "produits": [
+            ("categorie", "TEXT"),
+            ("actif", "BOOLEAN DEFAULT TRUE"),
+        ],
+        "livreurs": [
+            ("taux_par_livraison", "FLOAT DEFAULT 0"),
+            ("disponible", "BOOLEAN DEFAULT TRUE"),
+        ],
+        "commandes": [
+            ("probleme_motif", "TEXT"),
+        ],
+    }
+    inspecteur = inspect(engine)
+    tables_existantes = inspecteur.get_table_names()
+    with engine.connect() as connexion:
+        for table, colonnes in colonnes_attendues.items():
+            if table not in tables_existantes:
+                continue  # la table sera créée avec toutes ses colonnes par create_all, rien à faire
+            colonnes_existantes = {c["name"] for c in inspecteur.get_columns(table)}
+            for nom_colonne, type_sql in colonnes:
+                if nom_colonne not in colonnes_existantes:
+                    connexion.execute(text(f"ALTER TABLE {table} ADD COLUMN {nom_colonne} {type_sql}"))
+                    connexion.commit()
+
+
+migrer_schema()
 
 
 def seed_si_vide():
