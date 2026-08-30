@@ -882,6 +882,27 @@ def get_paiements_livreurs(db: Session = Depends(get_db)):
     return [d_paiement(p) for p in db.query(PaiementLivreurDB).all()]
 
 
+@app.post("/reinitialiser-activite")
+def reinitialiser_activite(db: Session = Depends(get_db)):
+    """Vide toutes les données d'ACTIVITÉ (commandes, mouvements, pertes, paiements) —
+    utile pour repartir propre après une phase de test. Les plats et livreurs déjà
+    configurés (nom, prix, identifiants...) ne sont PAS supprimés, seule leur activité l'est."""
+    db.query(CommandeDB).delete()
+    db.query(ReapprovisionnementDB).delete()
+    db.query(PerteDB).delete()
+    db.query(PaiementLivreurDB).delete()
+    db.query(MouvementStockDB).delete()
+
+    for p in db.query(ProduitDB).all():
+        p.quantite_stock = 0
+        p.prix_achat_moyen = 0
+    for l in db.query(LivreurDB).all():
+        l.nb_commandes_en_cours = 0
+
+    db.commit()
+    return {"ok": True}
+
+
 @app.get("/stats/finance/export-csv")
 def export_finance_csv(date_debut: str | None = None, date_fin: str | None = None, db: Session = Depends(get_db)):
     import csv, io
