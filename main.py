@@ -179,6 +179,7 @@ class CommandeDB(Base):
     date_depart = Column(String, nullable=True)
     date_livraison = Column(String, nullable=True)
     probleme_motif = Column(String, nullable=True)
+    produit_nom = Column(String, nullable=True)
 
 
 class ReapprovisionnementDB(Base):
@@ -247,6 +248,7 @@ def migrer_schema():
         ],
         "commandes": [
             ("probleme_motif", "TEXT"),
+            ("produit_nom", "TEXT"),
         ],
     }
     inspecteur = inspect(engine)
@@ -320,6 +322,31 @@ def migrer_mots_de_passe_en_clair():
 
 migrer_mots_de_passe_en_clair()
 
+
+def migrer_produit_nom_commandes():
+    """Rattrapage pour les commandes déjà en base, créées avant l'ajout du champ produit_nom :
+    on renseigne le nom à partir du produit s'il existe encore. Si le produit a depuis été
+    supprimé, le nom est définitivement perdu pour cette commande (rien à récupérer) — mais toutes
+    les commandes créées à partir de maintenant garderont leur nom même si le produit est supprimé."""
+    db = SessionLocal()
+    try:
+        a_modifie = False
+        commandes_sans_nom = db.query(CommandeDB).filter(
+            (CommandeDB.produit_nom == None) | (CommandeDB.produit_nom == "")
+        ).all()
+        for c in commandes_sans_nom:
+            p = db.query(ProduitDB).get(c.produit_id)
+            if p:
+                c.produit_nom = p.nom
+                a_modifie = True
+        if a_modifie:
+            db.commit()
+    finally:
+        db.close()
+
+
+migrer_produit_nom_commandes()
+
 app = FastAPI(title="Livraison Cité - API")
 # IMPORTANT : remplace "*" par l'origine exacte de ton frontend une fois son URL finale connue
 # (ex: ["https://tonapp.pages.dev"]) pour empêcher n'importe quel site d'appeler cette API.
@@ -354,7 +381,7 @@ def d_livreur(l): return {"id": l.id, "nom": l.nom, "identifiant": l.identifiant
                            "nb_commandes_en_cours": l.nb_commandes_en_cours,
                            "taux_par_livraison": l.taux_par_livraison, "disponible": l.disponible}
 
-def d_commande(c): return {"id": c.id, "produit_id": c.produit_id, "qte": c.qte, "residence": c.residence,
+def d_commande(c): return {"id": c.id, "produit_id": c.produit_id, "produit_nom": c.produit_nom, "qte": c.qte, "residence": c.residence,
                             "numero_chambre": c.numero_chambre,
                             "adresse": c.adresse, "statut": c.statut,
                             "livreur_id": c.livreur_id, "cout_unitaire": c.cout_unitaire,
@@ -674,7 +701,7 @@ def creer_commande(data: NouvelleCommande, db: Session = Depends(get_db), utilis
     if not chambre:
         raise HTTPException(400, "Le numéro de chambre est obligatoire")
     c = CommandeDB(
-        produit_id=data.produit_id, qte=data.qte, residence=data.residence, numero_chambre=chambre,
+        produit_id=data.produit_id, produit_nom=p.nom, qte=data.qte, residence=data.residence, numero_chambre=chambre,
         adresse=f"Résidence {data.residence}, Chambre {chambre}",
         statut="en_attente", livreur_id=None, cout_unitaire=p.prix_achat_moyen,
         date_creation=maintenant(), date_assignation=None, date_depart=None, date_livraison=None,
@@ -763,6 +790,39 @@ def signaler_probleme(commande_id: int, data: SignalerProbleme, db: Session = De
     c.date_assignation = None
     c.date_depart = None
     db.commit()
+    db.refresh(c)
+    return d_commande(c)
+
+
+@app.post("/commandes/{commande_id}/annuler")
+def annuler_commande(commande_id: int, data: SignalerProbleme, db: Session = Depends(get_db),
+                      utilisateur: dict = Depends(utilisateur_courant)):
+    """Annulation définitive par le livreur (client injoignable, refuse la commande, erreur...) :
+    contrairement à /probleme, la commande n'est PAS réassignée à quelqu'un d'autre. Le plat, déjà
+    préparé et décompté du stock à la création de la commande, est comptabilisé en perte plutôt que
+    d'être remis en stock (un plat cuisiné ne se reconserve pas)."""
+    c = db.query(CommandeDB).get(commande_id)
+    if not c:
+        raise HTTPException(404, "Commande introuvable")
+    if utilisateur["role"] == "livreur" and c.livreur_id != utilisateur["id"]:
+        raise HTTPException(403, "Cette commande n'est pas assignée à toi")
+    if c.statut in ("livree", "annulee"):
+        raise HTTPException(400, "Cette commande est déjà terminée")
+
+    if c.livreur_id:
+        l = db.query(LivreurDB).get(c.livreur_id)
+        if l:
+            l.nb_commandes_en_cours = max(0, l.nb_commandes_en_cours - 1)
+
+    cout_total = round(c.cout_unitaire * c.qte, 2)
+    db.add(PerteDB(produit_id=c.produit_id, quantite=c.qte, cout_total=cout_total, date=maintenant()))
+    enregistrer_mouvement(db, c.produit_id, "annulation", 0, motif=f"Commande #{c.id} annulée — {data.motif}")
+
+    c.statut = "annulee"
+    c.probleme_motif = data.motif
+    db.commit()
+
+    assigner_commandes_en_attente(db)  # le livreur libéré peut reprendre une commande en attente
     db.refresh(c)
     return d_commande(c)
 
