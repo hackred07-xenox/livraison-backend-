@@ -1,13 +1,9 @@
 import os
-import base64
 import hashlib
-import hmac
-import json
 import secrets
-import time
 from datetime import datetime, timezone
 
-from fastapi import FastAPI, HTTPException, Depends, Header
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel
@@ -47,6 +43,24 @@ def minutes_entre(debut: str, fin: str) -> float:
     return round((f - d).total_seconds() / 60, 1)
 
 
+def hasher_mot_de_passe(mdp: str) -> str:
+    """Contrairement aux mots de passe gérant/livreur (stockés en clair, dette existante
+    hors périmètre ici), les mots de passe clients sont salés + hachés : la surface
+    publique augmente avec ces comptes, donc le risque en cas de fuite de la base aussi."""
+    sel = secrets.token_hex(16)
+    empreinte = hashlib.pbkdf2_hmac("sha256", mdp.encode(), bytes.fromhex(sel), 100_000).hex()
+    return f"{sel}${empreinte}"
+
+
+def verifier_mot_de_passe(mdp: str, stocke: str) -> bool:
+    try:
+        sel, empreinte = stocke.split("$")
+    except ValueError:
+        return False
+    calcule = hashlib.pbkdf2_hmac("sha256", mdp.encode(), bytes.fromhex(sel), 100_000).hex()
+    return secrets.compare_digest(calcule, empreinte)
+
+
 # ====== POSITIONS APPROXIMATIVES DES RÉSIDENCES (pour l'itinéraire) ======
 RESIDENCES_COORDS = {
     1: (8.6, 3.9), 2: (9.0, 6.6), 3: (6.5, 7.0), 4: (5.5, 8.4),
@@ -60,75 +74,6 @@ MAX_COMMANDES_LIVREUR = 3
 
 def distance(a, b):
     return ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5
-
-
-# ====== SÉCURITÉ : hachage des mots de passe (PBKDF2, sans dépendance externe) ======
-PBKDF2_ITERATIONS = 260_000
-
-def hacher_mot_de_passe(mot_de_passe: str) -> str:
-    sel = secrets.token_hex(16)
-    empreinte = hashlib.pbkdf2_hmac("sha256", mot_de_passe.encode(), bytes.fromhex(sel), PBKDF2_ITERATIONS)
-    return f"pbkdf2_sha256${PBKDF2_ITERATIONS}${sel}${empreinte.hex()}"
-
-def est_mot_de_passe_hache(valeur: str) -> bool:
-    return isinstance(valeur, str) and valeur.startswith("pbkdf2_sha256$") and valeur.count("$") == 3
-
-def verifier_mot_de_passe(mot_de_passe: str, empreinte_stockee: str) -> bool:
-    if not est_mot_de_passe_hache(empreinte_stockee):
-        return False
-    try:
-        _, iterations, sel, hash_attendu = empreinte_stockee.split("$")
-        calcul = hashlib.pbkdf2_hmac("sha256", mot_de_passe.encode(), bytes.fromhex(sel), int(iterations))
-        return hmac.compare_digest(calcul.hex(), hash_attendu)
-    except (ValueError, TypeError):
-        return False
-
-
-# ====== SÉCURITÉ : sessions par token signé (sans dépendance externe type JWT) ======
-# IMPORTANT : définir la variable d'environnement SECRET_KEY sur Render avec une valeur secrète
-# fixe. Sans elle, une clé aléatoire est générée à chaque redémarrage et déconnecte tout le monde.
-SECRET_KEY = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
-TOKEN_DUREE_SECONDES = 12 * 3600  # 12h, à ajuster selon le confort d'usage voulu
-
-def emettre_token(role: str, sujet_id: int) -> str:
-    charge = {"role": role, "id": sujet_id, "exp": int(time.time()) + TOKEN_DUREE_SECONDES}
-    charge_b64 = base64.urlsafe_b64encode(json.dumps(charge, separators=(",", ":")).encode()).decode().rstrip("=")
-    signature = hmac.new(SECRET_KEY.encode(), charge_b64.encode(), hashlib.sha256).hexdigest()
-    return f"{charge_b64}.{signature}"
-
-def verifier_token(token: str) -> dict | None:
-    try:
-        charge_b64, signature = token.split(".")
-        signature_attendue = hmac.new(SECRET_KEY.encode(), charge_b64.encode(), hashlib.sha256).hexdigest()
-        if not hmac.compare_digest(signature, signature_attendue):
-            return None
-        charge = json.loads(base64.urlsafe_b64decode(charge_b64 + "=" * (-len(charge_b64) % 4)))
-        if charge.get("exp", 0) < time.time():
-            return None
-        return charge
-    except Exception:
-        return None
-
-def utilisateur_courant(authorization: str | None = Header(default=None)) -> dict:
-    """Dépendance FastAPI : exige un token valide dans l'en-tête Authorization: Bearer <token>."""
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(401, "Authentification requise")
-    charge = verifier_token(authorization.removeprefix("Bearer ").strip())
-    if not charge:
-        raise HTTPException(401, "Session invalide ou expirée — reconnecte-toi")
-    return charge
-
-def exiger_gerant(utilisateur: dict = Depends(utilisateur_courant)) -> dict:
-    """Dépendance FastAPI : exige en plus que l'utilisateur connecté soit le gérant."""
-    if utilisateur["role"] != "gerant":
-        raise HTTPException(403, "Réservé au gérant")
-    return utilisateur
-
-def exiger_soi_meme_ou_gerant(livreur_id: int, utilisateur: dict = Depends(utilisateur_courant)) -> dict:
-    """Dépendance FastAPI : un livreur ne peut agir que sur ses propres données ; le gérant peut tout voir."""
-    if utilisateur["role"] == "livreur" and utilisateur["id"] != livreur_id:
-        raise HTTPException(403, "Tu ne peux accéder qu'à tes propres données")
-    return utilisateur
 
 
 # ====== MODÈLES DE TABLES (SQLAlchemy) ======
@@ -179,7 +124,8 @@ class CommandeDB(Base):
     date_depart = Column(String, nullable=True)
     date_livraison = Column(String, nullable=True)
     probleme_motif = Column(String, nullable=True)
-    produit_nom = Column(String, nullable=True)
+    client_id = Column(Integer, nullable=True)  # NULL = commande saisie par le gérant
+    origine = Column(String, default="gerant")  # "gerant" ou "client"
 
 
 class ReapprovisionnementDB(Base):
@@ -228,6 +174,19 @@ class PaiementLivreurDB(Base):
     date = Column(String)
 
 
+class ClientDB(Base):
+    """Compte client : permet de commander en autonomie depuis son téléphone,
+    sans passer par une saisie manuelle du gérant."""
+    __tablename__ = "clients"
+    id = Column(Integer, primary_key=True)
+    nom = Column(String, nullable=False)
+    telephone = Column(String, unique=True, nullable=False)
+    mot_de_passe_hash = Column(String, nullable=False)
+    residence = Column(Integer, nullable=True)
+    numero_chambre = Column(String, nullable=True)
+    date_creation = Column(String)
+
+
 Base.metadata.create_all(bind=engine)
 
 
@@ -248,7 +207,8 @@ def migrer_schema():
         ],
         "commandes": [
             ("probleme_motif", "TEXT"),
-            ("produit_nom", "TEXT"),
+            ("client_id", "INTEGER"),
+            ("origine", "TEXT DEFAULT 'gerant'"),
         ],
     }
     inspecteur = inspect(engine)
@@ -284,11 +244,11 @@ def seed_si_vide():
                                          motif="Stock de départ", date=maintenant()))
         if db.query(LivreurDB).count() == 0:
             db.add_all([
-                LivreurDB(nom="Karim", identifiant="karim", mot_de_passe=hacher_mot_de_passe("1234"), nb_commandes_en_cours=0),
-                LivreurDB(nom="Fatou", identifiant="fatou", mot_de_passe=hacher_mot_de_passe("1234"), nb_commandes_en_cours=0),
+                LivreurDB(nom="Karim", identifiant="karim", mot_de_passe="1234", nb_commandes_en_cours=0),
+                LivreurDB(nom="Fatou", identifiant="fatou", mot_de_passe="1234", nb_commandes_en_cours=0),
             ])
         if db.query(CompteGerantDB).count() == 0:
-            db.add(CompteGerantDB(identifiant="gerant", mot_de_passe=hacher_mot_de_passe("admin"), nom="Le gérant"))
+            db.add(CompteGerantDB(identifiant="gerant", mot_de_passe="admin", nom="Le gérant"))
         if db.query(ConfigDB).count() == 0:
             db.add(ConfigDB(mode_assignation="manuel"))
         db.commit()
@@ -298,65 +258,8 @@ def seed_si_vide():
 
 seed_si_vide()
 
-
-def migrer_mots_de_passe_en_clair():
-    """Sur une base déjà en production, les mots de passe existants sont encore en clair
-    (avant ce correctif de sécurité). On les hache une bonne fois pour toutes au démarrage,
-    sans rien casser : les identifiants et mots de passe existants continuent de fonctionner."""
-    db = SessionLocal()
-    try:
-        a_modifie = False
-        for compte in db.query(CompteGerantDB).all():
-            if not est_mot_de_passe_hache(compte.mot_de_passe):
-                compte.mot_de_passe = hacher_mot_de_passe(compte.mot_de_passe)
-                a_modifie = True
-        for l in db.query(LivreurDB).all():
-            if not est_mot_de_passe_hache(l.mot_de_passe):
-                l.mot_de_passe = hacher_mot_de_passe(l.mot_de_passe)
-                a_modifie = True
-        if a_modifie:
-            db.commit()
-    finally:
-        db.close()
-
-
-migrer_mots_de_passe_en_clair()
-
-
-def migrer_produit_nom_commandes():
-    """Rattrapage pour les commandes déjà en base, créées avant l'ajout du champ produit_nom :
-    on renseigne le nom à partir du produit s'il existe encore. Si le produit a depuis été
-    supprimé, le nom est définitivement perdu pour cette commande (rien à récupérer) — mais toutes
-    les commandes créées à partir de maintenant garderont leur nom même si le produit est supprimé."""
-    db = SessionLocal()
-    try:
-        a_modifie = False
-        commandes_sans_nom = db.query(CommandeDB).filter(
-            (CommandeDB.produit_nom == None) | (CommandeDB.produit_nom == "")
-        ).all()
-        for c in commandes_sans_nom:
-            p = db.query(ProduitDB).get(c.produit_id)
-            if p:
-                c.produit_nom = p.nom
-                a_modifie = True
-        if a_modifie:
-            db.commit()
-    finally:
-        db.close()
-
-
-migrer_produit_nom_commandes()
-
 app = FastAPI(title="Livraison Cité - API")
-# IMPORTANT : remplace "*" par l'origine exacte de ton frontend une fois son URL finale connue
-# (ex: ["https://tonapp.pages.dev"]) pour empêcher n'importe quel site d'appeler cette API.
-ORIGINES_AUTORISEES = os.environ.get("ORIGINES_AUTORISEES", "*")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[ORIGINES_AUTORISEES] if ORIGINES_AUTORISEES != "*" else ["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 
 def enregistrer_mouvement(db: Session, produit_id: int, type_mouvement: str, delta: int, motif: str = None):
@@ -378,16 +281,20 @@ def d_produit(p): return {"id": p.id, "nom": p.nom, "prix": p.prix, "quantite_st
                            "categorie": p.categorie, "actif": p.actif}
 
 def d_livreur(l): return {"id": l.id, "nom": l.nom, "identifiant": l.identifiant,
-                           "nb_commandes_en_cours": l.nb_commandes_en_cours,
+                           "mot_de_passe": l.mot_de_passe, "nb_commandes_en_cours": l.nb_commandes_en_cours,
                            "taux_par_livraison": l.taux_par_livraison, "disponible": l.disponible}
 
-def d_commande(c): return {"id": c.id, "produit_id": c.produit_id, "produit_nom": c.produit_nom, "qte": c.qte, "residence": c.residence,
+def d_commande(c): return {"id": c.id, "produit_id": c.produit_id, "qte": c.qte, "residence": c.residence,
                             "numero_chambre": c.numero_chambre,
                             "adresse": c.adresse, "statut": c.statut,
                             "livreur_id": c.livreur_id, "cout_unitaire": c.cout_unitaire,
                             "date_creation": c.date_creation, "date_assignation": c.date_assignation,
                             "date_depart": c.date_depart, "date_livraison": c.date_livraison,
-                            "probleme_motif": c.probleme_motif}
+                            "probleme_motif": c.probleme_motif,
+                            "client_id": c.client_id, "origine": c.origine}
+
+def d_client(c): return {"id": c.id, "nom": c.nom, "telephone": c.telephone,
+                          "residence": c.residence, "numero_chambre": c.numero_chambre}
 
 def d_reappro(r): return {"id": r.id, "produit_id": r.produit_id, "quantite": r.quantite,
                            "cout_total": r.cout_total, "date": r.date}
@@ -465,44 +372,73 @@ class ModifierProduit(BaseModel):
     categorie: str | None = None
     actif: bool | None = None
 
+class ClientInscription(BaseModel):
+    nom: str
+    telephone: str
+    mot_de_passe: str
+    residence: int
+    numero_chambre: str
+
+class ClientLoginRequest(BaseModel):
+    telephone: str
+    mot_de_passe: str
+
+class ModifierClient(BaseModel):
+    nom: str | None = None
+    residence: int | None = None
+    numero_chambre: str | None = None
+
+class NouvelleCommandeClient(BaseModel):
+    produit_id: int
+    qte: int
+    residence: int
+    numero_chambre: str
+
 
 # ====== AUTHENTIFICATION ======
 @app.post("/login")
 def login(data: LoginRequest, db: Session = Depends(get_db)):
     if data.role == "gerant":
-        compte = db.query(CompteGerantDB).filter_by(identifiant=data.identifiant).first()
-        if not compte or not verifier_mot_de_passe(data.mot_de_passe, compte.mot_de_passe):
+        compte = db.query(CompteGerantDB).filter_by(identifiant=data.identifiant, mot_de_passe=data.mot_de_passe).first()
+        if not compte:
             raise HTTPException(401, "Identifiant ou mot de passe incorrect")
-        token = emettre_token(role="gerant", sujet_id=compte.id)
-        return {"role": "gerant", "nom": compte.nom, "token": token}
+        return {"role": "gerant", "nom": compte.nom}
 
-    livreur = db.query(LivreurDB).filter_by(identifiant=data.identifiant).first()
-    if not livreur or not verifier_mot_de_passe(data.mot_de_passe, livreur.mot_de_passe):
+    livreur = db.query(LivreurDB).filter_by(identifiant=data.identifiant, mot_de_passe=data.mot_de_passe).first()
+    if not livreur:
         raise HTTPException(401, "Identifiant ou mot de passe incorrect")
-    token = emettre_token(role="livreur", sujet_id=livreur.id)
-    return {"role": "livreur", "nom": livreur.nom, "livreur_id": livreur.id, "token": token}
+    return {"role": "livreur", "nom": livreur.nom, "livreur_id": livreur.id}
 
 
 @app.patch("/compte-gerant/mot-de-passe")
-def changer_mot_de_passe_gerant(data: ChangerMotDePasseGerant, db: Session = Depends(get_db),
-                                 utilisateur: dict = Depends(exiger_gerant)):
+def changer_mot_de_passe_gerant(data: ChangerMotDePasseGerant, db: Session = Depends(get_db)):
     compte = db.query(CompteGerantDB).first()
-    if not verifier_mot_de_passe(data.mot_de_passe_actuel, compte.mot_de_passe):
+    if data.mot_de_passe_actuel != compte.mot_de_passe:
         raise HTTPException(401, "Mot de passe actuel incorrect")
     if len(data.nouveau_mot_de_passe) < 4:
         raise HTTPException(400, "Le nouveau mot de passe doit faire au moins 4 caractères")
-    compte.mot_de_passe = hacher_mot_de_passe(data.nouveau_mot_de_passe)
+    compte.mot_de_passe = data.nouveau_mot_de_passe
     db.commit()
     return {"ok": True}
 
 
 # ====== PRODUITS ======
 @app.get("/produits")
-def get_produits(db: Session = Depends(get_db), utilisateur: dict = Depends(utilisateur_courant)):
+def get_produits(db: Session = Depends(get_db)):
     return [d_produit(p) for p in db.query(ProduitDB).all()]
 
+@app.get("/catalogue")
+def get_catalogue(db: Session = Depends(get_db)):
+    """Vue publique du catalogue pour la page client : uniquement ce qui sert à
+    commander. Contrairement à /produits, on ne renvoie jamais prix_achat_moyen
+    ni seuil_alerte — ce sont des données commerciales internes, pas à exposer
+    à n'importe qui appelant l'API publiquement."""
+    produits = db.query(ProduitDB).filter_by(actif=True).all()
+    return [{"id": p.id, "nom": p.nom, "prix": p.prix, "categorie": p.categorie,
+             "stock_restant": p.quantite_stock} for p in produits]
+
 @app.post("/produits")
-def creer_produit(data: NouveauProduit, db: Session = Depends(get_db), utilisateur: dict = Depends(exiger_gerant)):
+def creer_produit(data: NouveauProduit, db: Session = Depends(get_db)):
     p = ProduitDB(nom=data.nom.strip(), prix=data.prix, quantite_stock=data.quantite_stock,
                   seuil_alerte=data.seuil_alerte, prix_achat_moyen=0,
                   categorie=(data.categorie.strip() if data.categorie else None), actif=True)
@@ -513,8 +449,7 @@ def creer_produit(data: NouveauProduit, db: Session = Depends(get_db), utilisate
     return d_produit(p)
 
 @app.patch("/produits/{produit_id}")
-def modifier_produit(produit_id: int, data: ModifierProduit, db: Session = Depends(get_db),
-                      utilisateur: dict = Depends(exiger_gerant)):
+def modifier_produit(produit_id: int, data: ModifierProduit, db: Session = Depends(get_db)):
     p = db.query(ProduitDB).get(produit_id)
     if not p:
         raise HTTPException(404, "Produit introuvable")
@@ -527,7 +462,7 @@ def modifier_produit(produit_id: int, data: ModifierProduit, db: Session = Depen
     return d_produit(p)
 
 @app.delete("/produits/{produit_id}")
-def supprimer_produit(produit_id: int, db: Session = Depends(get_db), utilisateur: dict = Depends(exiger_gerant)):
+def supprimer_produit(produit_id: int, db: Session = Depends(get_db)):
     p = db.query(ProduitDB).get(produit_id)
     if not p:
         raise HTTPException(404, "Produit introuvable")
@@ -535,8 +470,7 @@ def supprimer_produit(produit_id: int, db: Session = Depends(get_db), utilisateu
     return {"ok": True}
 
 @app.patch("/produits/{produit_id}/stock")
-def update_stock(produit_id: int, data: StockUpdate, db: Session = Depends(get_db),
-                  utilisateur: dict = Depends(exiger_gerant)):
+def update_stock(produit_id: int, data: StockUpdate, db: Session = Depends(get_db)):
     p = db.query(ProduitDB).get(produit_id)
     if not p:
         raise HTTPException(404, "Produit introuvable")
@@ -551,8 +485,7 @@ def update_stock(produit_id: int, data: StockUpdate, db: Session = Depends(get_d
 
 # ====== HISTORIQUE DES MOUVEMENTS DE STOCK ======
 @app.get("/mouvements-stock")
-def get_mouvements_stock(produit_id: int | None = None, db: Session = Depends(get_db),
-                          utilisateur: dict = Depends(exiger_gerant)):
+def get_mouvements_stock(produit_id: int | None = None, db: Session = Depends(get_db)):
     q = db.query(MouvementStockDB)
     if produit_id is not None:
         q = q.filter_by(produit_id=produit_id)
@@ -561,12 +494,11 @@ def get_mouvements_stock(produit_id: int | None = None, db: Session = Depends(ge
 
 # ====== RÉAPPROVISIONNEMENT ======
 @app.get("/reapprovisionnements")
-def get_reapprovisionnements(db: Session = Depends(get_db), utilisateur: dict = Depends(exiger_gerant)):
+def get_reapprovisionnements(db: Session = Depends(get_db)):
     return [d_reappro(r) for r in db.query(ReapprovisionnementDB).all()]
 
 @app.post("/reapprovisionnements")
-def creer_reapprovisionnement(data: Reapprovisionnement, db: Session = Depends(get_db),
-                               utilisateur: dict = Depends(exiger_gerant)):
+def creer_reapprovisionnement(data: Reapprovisionnement, db: Session = Depends(get_db)):
     p = db.query(ProduitDB).get(data.produit_id)
     if not p:
         raise HTTPException(404, "Produit introuvable")
@@ -591,22 +523,21 @@ def creer_reapprovisionnement(data: Reapprovisionnement, db: Session = Depends(g
 
 # ====== LIVREURS ======
 @app.get("/livreurs")
-def get_livreurs(db: Session = Depends(get_db), utilisateur: dict = Depends(utilisateur_courant)):
+def get_livreurs(db: Session = Depends(get_db)):
     return [d_livreur(l) for l in db.query(LivreurDB).all()]
 
 @app.post("/livreurs")
-def creer_livreur(data: NouveauLivreur, db: Session = Depends(get_db), utilisateur: dict = Depends(exiger_gerant)):
+def creer_livreur(data: NouveauLivreur, db: Session = Depends(get_db)):
     identifiant = data.identifiant.strip().lower()
     if db.query(LivreurDB).filter_by(identifiant=identifiant).first():
         raise HTTPException(400, "Cet identifiant est déjà utilisé")
-    l = LivreurDB(nom=data.nom.strip(), identifiant=identifiant, mot_de_passe=hacher_mot_de_passe(data.mot_de_passe),
+    l = LivreurDB(nom=data.nom.strip(), identifiant=identifiant, mot_de_passe=data.mot_de_passe,
                   nb_commandes_en_cours=0, taux_par_livraison=data.taux_par_livraison)
     db.add(l); db.commit(); db.refresh(l)
     return d_livreur(l)
 
 @app.patch("/livreurs/{livreur_id}")
-def modifier_livreur(livreur_id: int, data: ModifierLivreur, db: Session = Depends(get_db),
-                      utilisateur: dict = Depends(exiger_gerant)):
+def modifier_livreur(livreur_id: int, data: ModifierLivreur, db: Session = Depends(get_db)):
     l = db.query(LivreurDB).get(livreur_id)
     if not l:
         raise HTTPException(404, "Livreur introuvable")
@@ -619,7 +550,7 @@ def modifier_livreur(livreur_id: int, data: ModifierLivreur, db: Session = Depen
     if data.nom is not None:
         l.nom = data.nom.strip()
     if data.mot_de_passe:
-        l.mot_de_passe = hacher_mot_de_passe(data.mot_de_passe)
+        l.mot_de_passe = data.mot_de_passe
     if data.taux_par_livraison is not None:
         l.taux_par_livraison = data.taux_par_livraison
     if data.disponible is not None:
@@ -628,8 +559,7 @@ def modifier_livreur(livreur_id: int, data: ModifierLivreur, db: Session = Depen
     return d_livreur(l)
 
 @app.post("/livreurs/{livreur_id}/disponibilite")
-def changer_disponibilite(livreur_id: int, data: Disponibilite, db: Session = Depends(get_db),
-                           utilisateur: dict = Depends(exiger_soi_meme_ou_gerant)):
+def changer_disponibilite(livreur_id: int, data: Disponibilite, db: Session = Depends(get_db)):
     """Le livreur signale lui-même s'il est disponible ou en pause — l'assignation auto en tient compte."""
     l = db.query(LivreurDB).get(livreur_id)
     if not l:
@@ -639,7 +569,7 @@ def changer_disponibilite(livreur_id: int, data: Disponibilite, db: Session = De
     return d_livreur(l)
 
 @app.delete("/livreurs/{livreur_id}")
-def supprimer_livreur(livreur_id: int, db: Session = Depends(get_db), utilisateur: dict = Depends(exiger_gerant)):
+def supprimer_livreur(livreur_id: int, db: Session = Depends(get_db)):
     l = db.query(LivreurDB).get(livreur_id)
     if not l:
         raise HTTPException(404, "Livreur introuvable")
@@ -651,11 +581,11 @@ def supprimer_livreur(livreur_id: int, db: Session = Depends(get_db), utilisateu
 
 # ====== CONFIG ======
 @app.get("/config")
-def get_config(db: Session = Depends(get_db), utilisateur: dict = Depends(utilisateur_courant)):
+def get_config(db: Session = Depends(get_db)):
     return {"mode_assignation": db.query(ConfigDB).first().mode_assignation}
 
 @app.put("/config")
-def set_config(data: ModeConfig, db: Session = Depends(get_db), utilisateur: dict = Depends(exiger_gerant)):
+def set_config(data: ModeConfig, db: Session = Depends(get_db)):
     cfg = db.query(ConfigDB).first()
     cfg.mode_assignation = data.mode_assignation
     db.commit()
@@ -664,7 +594,7 @@ def set_config(data: ModeConfig, db: Session = Depends(get_db), utilisateur: dic
 
 # ====== COMMANDES ======
 @app.get("/commandes")
-def get_commandes(db: Session = Depends(get_db), utilisateur: dict = Depends(utilisateur_courant)):
+def get_commandes(db: Session = Depends(get_db)):
     return [d_commande(c) for c in db.query(CommandeDB).all()]
 
 
@@ -688,7 +618,7 @@ def assigner_commandes_en_attente(db: Session):
 
 
 @app.post("/commandes")
-def creer_commande(data: NouvelleCommande, db: Session = Depends(get_db), utilisateur: dict = Depends(exiger_gerant)):
+def creer_commande(data: NouvelleCommande, db: Session = Depends(get_db)):
     p = db.query(ProduitDB).get(data.produit_id)
     if not p:
         raise HTTPException(404, "Produit introuvable")
@@ -701,7 +631,7 @@ def creer_commande(data: NouvelleCommande, db: Session = Depends(get_db), utilis
     if not chambre:
         raise HTTPException(400, "Le numéro de chambre est obligatoire")
     c = CommandeDB(
-        produit_id=data.produit_id, produit_nom=p.nom, qte=data.qte, residence=data.residence, numero_chambre=chambre,
+        produit_id=data.produit_id, qte=data.qte, residence=data.residence, numero_chambre=chambre,
         adresse=f"Résidence {data.residence}, Chambre {chambre}",
         statut="en_attente", livreur_id=None, cout_unitaire=p.prix_achat_moyen,
         date_creation=maintenant(), date_assignation=None, date_depart=None, date_livraison=None,
@@ -716,8 +646,7 @@ def creer_commande(data: NouvelleCommande, db: Session = Depends(get_db), utilis
 
 
 @app.post("/commandes/{commande_id}/assigner")
-def assigner_commande(commande_id: int, data: AssignationLivreur, db: Session = Depends(get_db),
-                       utilisateur: dict = Depends(exiger_gerant)):
+def assigner_commande(commande_id: int, data: AssignationLivreur, db: Session = Depends(get_db)):
     c = db.query(CommandeDB).get(commande_id)
     l = db.query(LivreurDB).get(data.livreur_id)
     if not c or not l:
@@ -734,12 +663,10 @@ def assigner_commande(commande_id: int, data: AssignationLivreur, db: Session = 
 
 
 @app.post("/commandes/{commande_id}/demarrer")
-def demarrer_livraison(commande_id: int, db: Session = Depends(get_db), utilisateur: dict = Depends(utilisateur_courant)):
+def demarrer_livraison(commande_id: int, db: Session = Depends(get_db)):
     c = db.query(CommandeDB).get(commande_id)
     if not c:
         raise HTTPException(404, "Commande introuvable")
-    if utilisateur["role"] == "livreur" and c.livreur_id != utilisateur["id"]:
-        raise HTTPException(403, "Cette commande n'est pas assignée à toi")
     if c.statut != "assignee":
         raise HTTPException(400, "Cette commande n'est pas au statut 'assignée'")
     c.statut = "en_livraison"
@@ -749,12 +676,10 @@ def demarrer_livraison(commande_id: int, db: Session = Depends(get_db), utilisat
 
 
 @app.post("/commandes/{commande_id}/livrer")
-def marquer_livree(commande_id: int, db: Session = Depends(get_db), utilisateur: dict = Depends(utilisateur_courant)):
+def marquer_livree(commande_id: int, db: Session = Depends(get_db)):
     c = db.query(CommandeDB).get(commande_id)
     if not c:
         raise HTTPException(404, "Commande introuvable")
-    if utilisateur["role"] == "livreur" and c.livreur_id != utilisateur["id"]:
-        raise HTTPException(403, "Cette commande n'est pas assignée à toi")
     c.statut = "livree"
     c.date_livraison = maintenant()
     if c.livreur_id:
@@ -771,15 +696,12 @@ def marquer_livree(commande_id: int, db: Session = Depends(get_db), utilisateur:
 
 
 @app.post("/commandes/{commande_id}/probleme")
-def signaler_probleme(commande_id: int, data: SignalerProbleme, db: Session = Depends(get_db),
-                       utilisateur: dict = Depends(utilisateur_courant)):
+def signaler_probleme(commande_id: int, data: SignalerProbleme, db: Session = Depends(get_db)):
     """Le livreur signale un souci (client absent, adresse introuvable...) : la commande
     retourne au gérant (en_attente) pour être réassignée, et le motif reste visible."""
     c = db.query(CommandeDB).get(commande_id)
     if not c:
         raise HTTPException(404, "Commande introuvable")
-    if utilisateur["role"] == "livreur" and c.livreur_id != utilisateur["id"]:
-        raise HTTPException(403, "Cette commande n'est pas assignée à toi")
     if c.livreur_id:
         l = db.query(LivreurDB).get(c.livreur_id)
         if l:
@@ -794,43 +716,106 @@ def signaler_probleme(commande_id: int, data: SignalerProbleme, db: Session = De
     return d_commande(c)
 
 
-@app.post("/commandes/{commande_id}/annuler")
-def annuler_commande(commande_id: int, data: SignalerProbleme, db: Session = Depends(get_db),
-                      utilisateur: dict = Depends(utilisateur_courant)):
-    """Annulation définitive par le livreur (client injoignable, refuse la commande, erreur...) :
-    contrairement à /probleme, la commande n'est PAS réassignée à quelqu'un d'autre. Le plat, déjà
-    préparé et décompté du stock à la création de la commande, est comptabilisé en perte plutôt que
-    d'être remis en stock (un plat cuisiné ne se reconserve pas)."""
-    c = db.query(CommandeDB).get(commande_id)
+# ====== CLIENTS (commande directe depuis le téléphone) ======
+@app.post("/clients/inscription")
+def inscription_client(data: ClientInscription, db: Session = Depends(get_db)):
+    telephone = data.telephone.strip()
+    if not telephone:
+        raise HTTPException(400, "Le numéro de téléphone est obligatoire")
+    if db.query(ClientDB).filter_by(telephone=telephone).first():
+        raise HTTPException(400, "Un compte existe déjà avec ce numéro")
+    if len(data.mot_de_passe) < 4:
+        raise HTTPException(400, "Le mot de passe doit faire au moins 4 caractères")
+    chambre = data.numero_chambre.strip()
+    if not chambre:
+        raise HTTPException(400, "Le numéro de chambre est obligatoire")
+
+    c = ClientDB(
+        nom=data.nom.strip(), telephone=telephone,
+        mot_de_passe_hash=hasher_mot_de_passe(data.mot_de_passe),
+        residence=data.residence, numero_chambre=chambre,
+        date_creation=maintenant(),
+    )
+    db.add(c); db.commit(); db.refresh(c)
+    return d_client(c)
+
+
+@app.post("/clients/login")
+def login_client(data: ClientLoginRequest, db: Session = Depends(get_db)):
+    c = db.query(ClientDB).filter_by(telephone=data.telephone.strip()).first()
+    if not c or not verifier_mot_de_passe(data.mot_de_passe, c.mot_de_passe_hash):
+        # Message volontairement générique : ne pas révéler si c'est le numéro
+        # ou le mot de passe qui est incorrect (évite l'énumération de comptes).
+        raise HTTPException(401, "Numéro ou mot de passe incorrect")
+    return d_client(c)
+
+
+@app.get("/clients/{client_id}")
+def get_client(client_id: int, db: Session = Depends(get_db)):
+    c = db.query(ClientDB).get(client_id)
     if not c:
-        raise HTTPException(404, "Commande introuvable")
-    if utilisateur["role"] == "livreur" and c.livreur_id != utilisateur["id"]:
-        raise HTTPException(403, "Cette commande n'est pas assignée à toi")
-    if c.statut in ("livree", "annulee"):
-        raise HTTPException(400, "Cette commande est déjà terminée")
+        raise HTTPException(404, "Compte introuvable")
+    return d_client(c)
 
-    if c.livreur_id:
-        l = db.query(LivreurDB).get(c.livreur_id)
-        if l:
-            l.nb_commandes_en_cours = max(0, l.nb_commandes_en_cours - 1)
 
-    cout_total = round(c.cout_unitaire * c.qte, 2)
-    db.add(PerteDB(produit_id=c.produit_id, quantite=c.qte, cout_total=cout_total, date=maintenant()))
-    enregistrer_mouvement(db, c.produit_id, "annulation", 0, motif=f"Commande #{c.id} annulée — {data.motif}")
-
-    c.statut = "annulee"
-    c.probleme_motif = data.motif
+@app.patch("/clients/{client_id}")
+def modifier_client(client_id: int, data: ModifierClient, db: Session = Depends(get_db)):
+    c = db.query(ClientDB).get(client_id)
+    if not c:
+        raise HTTPException(404, "Compte introuvable")
+    if data.nom is not None: c.nom = data.nom.strip()
+    if data.residence is not None: c.residence = data.residence
+    if data.numero_chambre is not None: c.numero_chambre = data.numero_chambre.strip()
     db.commit()
+    return d_client(c)
 
-    assigner_commandes_en_attente(db)  # le livreur libéré peut reprendre une commande en attente
+
+@app.get("/clients/{client_id}/commandes")
+def get_commandes_client(client_id: int, db: Session = Depends(get_db)):
+    """Ne renvoie que les commandes de CE client — jamais celles des autres.
+    Contrairement à GET /commandes (réservé au gérant), cet endpoint est filtré
+    par client_id pour ne jamais exposer l'adresse ou les commandes d'un tiers."""
+    commandes = db.query(CommandeDB).filter_by(client_id=client_id).order_by(CommandeDB.id.desc()).all()
+    return [d_commande(c) for c in commandes]
+
+
+@app.post("/clients/{client_id}/commandes")
+def creer_commande_client(client_id: int, data: NouvelleCommandeClient, db: Session = Depends(get_db)):
+    client = db.query(ClientDB).get(client_id)
+    if not client:
+        raise HTTPException(404, "Compte introuvable")
+    p = db.query(ProduitDB).get(data.produit_id)
+    if not p or not p.actif:
+        raise HTTPException(404, "Produit introuvable")
+    if data.qte <= 0:
+        raise HTTPException(400, "Quantité invalide")
+    if data.qte > p.quantite_stock:
+        raise HTTPException(400, "Stock insuffisant")
+
+    chambre = data.numero_chambre.strip()
+    if not chambre:
+        raise HTTPException(400, "Le numéro de chambre est obligatoire")
+
+    p.quantite_stock -= data.qte
+    c = CommandeDB(
+        produit_id=data.produit_id, qte=data.qte, residence=data.residence, numero_chambre=chambre,
+        adresse=f"Résidence {data.residence}, Chambre {chambre}",
+        statut="en_attente", livreur_id=None, cout_unitaire=p.prix_achat_moyen,
+        date_creation=maintenant(), date_assignation=None, date_depart=None, date_livraison=None,
+        client_id=client_id, origine="client",
+    )
+    db.add(c)
+    enregistrer_mouvement(db, data.produit_id, "vente", -data.qte)
+    db.commit(); db.refresh(c)
+
+    assigner_commandes_en_attente(db)
     db.refresh(c)
     return d_commande(c)
 
 
 # ====== ITINÉRAIRE LIVREUR ======
 @app.get("/livreurs/{livreur_id}/itineraire")
-def itineraire_livreur(livreur_id: int, db: Session = Depends(get_db),
-                        utilisateur: dict = Depends(exiger_soi_meme_ou_gerant)):
+def itineraire_livreur(livreur_id: int, db: Session = Depends(get_db)):
     actives = db.query(CommandeDB).filter(
         CommandeDB.livreur_id == livreur_id,
         CommandeDB.statut.in_(["assignee", "en_livraison"])
@@ -857,8 +842,7 @@ def itineraire_livreur(livreur_id: int, db: Session = Depends(get_db),
 
 # ====== STATISTIQUES ======
 @app.get("/stats/commandes")
-def stats_commandes(date_debut: str | None = None, date_fin: str | None = None, db: Session = Depends(get_db),
-                     utilisateur: dict = Depends(exiger_gerant)):
+def stats_commandes(date_debut: str | None = None, date_fin: str | None = None, db: Session = Depends(get_db)):
     commandes = [c for c in db.query(CommandeDB).all() if dans_periode(c.date_creation, date_debut, date_fin)]
     produits = {p.id: p for p in db.query(ProduitDB).all()}
 
@@ -913,7 +897,7 @@ def stats_commandes(date_debut: str | None = None, date_fin: str | None = None, 
 
 
 @app.get("/stats/gaspillage")
-def stats_gaspillage(db: Session = Depends(get_db), utilisateur: dict = Depends(exiger_gerant)):
+def stats_gaspillage(db: Session = Depends(get_db)):
     """Pour chaque plat : quelle part de ce qui a été approvisionné a fini en perte (invendu jeté)."""
     produits = db.query(ProduitDB).all()
     resultat = []
@@ -930,8 +914,7 @@ def stats_gaspillage(db: Session = Depends(get_db), utilisateur: dict = Depends(
 
 
 @app.get("/stats/finance")
-def stats_finance(date_debut: str | None = None, date_fin: str | None = None, db: Session = Depends(get_db),
-                   utilisateur: dict = Depends(exiger_gerant)):
+def stats_finance(date_debut: str | None = None, date_fin: str | None = None, db: Session = Depends(get_db)):
     produits = {p.id: p for p in db.query(ProduitDB).all()}
     livreurs = {l.id: l for l in db.query(LivreurDB).all()}
 
@@ -1006,7 +989,7 @@ def stats_finance(date_debut: str | None = None, date_fin: str | None = None, db
 
 
 @app.get("/stats/livreurs")
-def stats_livreurs(db: Session = Depends(get_db), utilisateur: dict = Depends(exiger_gerant)):
+def stats_livreurs(db: Session = Depends(get_db)):
     resultat = []
     for l in db.query(LivreurDB).all():
         livrees = db.query(CommandeDB).filter_by(livreur_id=l.id, statut="livree").all()
@@ -1023,7 +1006,7 @@ def stats_livreurs(db: Session = Depends(get_db), utilisateur: dict = Depends(ex
 
 # ====== CLÔTURE DE JOURNÉE ======
 @app.post("/cloture-journee")
-def cloturer_journee(db: Session = Depends(get_db), utilisateur: dict = Depends(exiger_gerant)):
+def cloturer_journee(db: Session = Depends(get_db)):
     """Les plats ne se gardent pas au lendemain : tout stock restant est une perte sèche.
     On la comptabilise, puis on remet le stock à zéro pour repartir propre le lendemain."""
     aujourdhui = maintenant()[:10]
@@ -1061,16 +1044,16 @@ def cloturer_journee(db: Session = Depends(get_db), utilisateur: dict = Depends(
 
 
 @app.get("/pertes")
-def get_pertes(db: Session = Depends(get_db), utilisateur: dict = Depends(exiger_gerant)):
+def get_pertes(db: Session = Depends(get_db)):
     return [d_perte(p) for p in db.query(PerteDB).all()]
 
 @app.get("/paiements-livreurs")
-def get_paiements_livreurs(db: Session = Depends(get_db), utilisateur: dict = Depends(exiger_gerant)):
+def get_paiements_livreurs(db: Session = Depends(get_db)):
     return [d_paiement(p) for p in db.query(PaiementLivreurDB).all()]
 
 
 @app.post("/reinitialiser-activite")
-def reinitialiser_activite(db: Session = Depends(get_db), utilisateur: dict = Depends(exiger_gerant)):
+def reinitialiser_activite(db: Session = Depends(get_db)):
     """Vide toutes les données d'ACTIVITÉ (commandes, mouvements, pertes, paiements) —
     utile pour repartir propre après une phase de test. Les plats et livreurs déjà
     configurés (nom, prix, identifiants...) ne sont PAS supprimés, seule leur activité l'est."""
@@ -1091,10 +1074,9 @@ def reinitialiser_activite(db: Session = Depends(get_db), utilisateur: dict = De
 
 
 @app.get("/stats/finance/export-csv")
-def export_finance_csv(date_debut: str | None = None, date_fin: str | None = None, db: Session = Depends(get_db),
-                        utilisateur: dict = Depends(exiger_gerant)):
+def export_finance_csv(date_debut: str | None = None, date_fin: str | None = None, db: Session = Depends(get_db)):
     import csv, io
-    data = stats_finance(date_debut=date_debut, date_fin=date_fin, db=db, utilisateur=utilisateur)
+    data = stats_finance(date_debut=date_debut, date_fin=date_fin, db=db)
     buffer = io.StringIO()
     writer = csv.writer(buffer)
     writer.writerow(["Date", "Type", "Produit", "Quantité", "Montant (F)", "Coût (F)", "Bénéfice (F)"])
