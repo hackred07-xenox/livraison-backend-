@@ -1,0 +1,969 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Cité Express — Commander</title>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+/* ====== TOKENS — identité visuelle de Cité Express (dark + orange) ====== */
+:root {
+  color-scheme: dark;
+  --paper:#0E0906; --card:rgba(255,255,255,.055);
+  --ink:#F3F1EA; --ink-soft:rgba(243,241,234,.62); --line:rgba(255,255,255,.12);
+  --brand:#F0803D; --brand-dark:#D9622F; --brand-soft:rgba(240,128,61,.18);
+  --teal:#34D399; --teal-soft:rgba(52,211,153,.16); --teal-ink:#34D399;
+  --amber:#FBBF24; --amber-soft:rgba(251,191,36,.16); --amber-ink:#FBBF24;
+  --red:#FB7185; --red-soft:rgba(251,113,133,.16); --red-ink:#FB7185;
+  --purple:#A78BFA; --purple-soft:rgba(167,139,250,.16); --purple-ink:#A78BFA;
+  --radius:22px; --radius-sm:14px;
+  --shadow:0 10px 40px rgba(0,0,0,.45);
+  --blur:22px;
+  --fs-base:14px;
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+  --paper:#F6F4EE; --card:rgba(20,18,12,.045);
+  --ink:#16150F; --ink-soft:rgba(22,21,15,.62); --line:rgba(0,0,0,.12);
+  --brand-soft:rgba(240,128,61,.14);
+  --shadow:0 10px 30px rgba(0,0,0,.10);
+}
+* { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+body {
+  margin:0; background:radial-gradient(ellipse 120% 60% at 50% -10%, #3A2415 0%, #1C130B 45%, #0E0906 100%);
+  background-attachment:fixed;
+  color:var(--ink);
+  font-family:'Inter',sans-serif; min-height:100vh; font-size:var(--fs-base);
+  padding-bottom:76px;
+  transition:background .2s, color .2s;
+}
+:root[data-theme="light"] body { background:var(--paper); }
+.particules { position:absolute; inset:0; overflow:hidden; pointer-events:none; z-index:0; }
+.particule { position:absolute; width:5px; height:5px; border-radius:50%; background:var(--brand);
+  opacity:.55; filter:blur(1px); animation:flotterParticule 5s ease-in-out infinite; }
+@keyframes flotterParticule { 0%,100%{ transform:translateY(0) scale(1); opacity:.5; } 50%{ transform:translateY(-16px) scale(1.3); opacity:.9; } }
+body.grand-texte { --fs-base:17px; }
+body.grand-texte h1 { font-size:28px; }
+body.grand-texte .name { font-size:16px; }
+body.grand-texte .meta { font-size:14px; }
+h1,h2,h3 { margin:0; font-family:'Fraunces',serif; }
+em { font-style:normal; color:var(--brand); }
+:focus-visible { outline:2px solid var(--brand); outline-offset:2px; }
+.montant { font-weight:800; letter-spacing:-.2px; }
+
+.eyebrow {
+  font:700 10px/1 'Inter',sans-serif; letter-spacing:2.5px; text-transform:uppercase;
+  color:var(--ink-soft); margin-bottom:6px; display:flex; align-items:center; gap:7px;
+}
+.eyebrow::before { content:''; width:6px; height:6px; border-radius:50%; background:var(--brand); }
+
+.s-title {
+  font:700 11px 'Inter',sans-serif; letter-spacing:1.5px; text-transform:uppercase;
+  color:var(--ink-soft); margin:0 0 14px;
+}
+
+.card { background:var(--card); border:1px solid var(--line); border-radius:var(--radius); padding:18px;
+  box-shadow:var(--shadow), inset 0 1px 0 rgba(255,255,255,.14); margin-bottom:12px;
+  backdrop-filter:blur(var(--blur)); -webkit-backdrop-filter:blur(var(--blur)); }
+.row { display:flex; justify-content:space-between; align-items:center; gap:12px; }
+.row + .row { margin-top:9px; }
+.name { font-weight:700; }
+.meta { font:12px/1.5 'Inter',sans-serif; color:var(--ink-soft); }
+.empty { color:var(--ink-soft); font:13px 'Inter',sans-serif; padding:34px 16px; text-align:center; }
+.empty .emoji-empty { font-size:38px; display:block; margin-bottom:10px; }
+
+.badge { display:inline-flex; align-items:center; gap:5px; font:700 11px 'Inter',sans-serif; padding:5px 12px; border-radius:99px; white-space:nowrap; }
+.badge-attente { background:var(--amber-soft); color:var(--amber-ink); border:1px solid rgba(251,191,36,.3); }
+.badge-assignee { background:var(--purple-soft); color:var(--purple-ink); border:1px solid rgba(167,139,250,.3); }
+.badge-livraison { background:var(--brand-soft); color:var(--brand); border:1px solid rgba(240,128,61,.3); }
+.badge-livree { background:var(--teal-soft); color:var(--teal-ink); border:1px solid rgba(52,211,153,.3); }
+.badge-epuise { background:var(--red-soft); color:var(--red-ink); border:1px solid rgba(251,113,133,.3); }
+
+button.btn { background:var(--card); border:1px solid var(--line); color:var(--ink); padding:11px 20px;
+  border-radius:999px; cursor:pointer; font:600 13px 'Inter',sans-serif; transition:.15s;
+  display:inline-flex; align-items:center; justify-content:center; gap:7px; }
+button.btn:hover { border-color:var(--brand); color:var(--brand); }
+button.btn:disabled { opacity:.4; cursor:not-allowed; }
+button.btn.primary { background:linear-gradient(135deg, var(--brand) 0%, var(--brand-dark) 100%); color:#fff; border-color:transparent;
+  box-shadow:0 8px 20px -6px rgba(240,128,61,.55); }
+button.btn.full { width:100%; }
+button.btn.small { padding:7px 14px; font-size:11px; }
+
+input, select { width:100%; background:rgba(255,255,255,.05); border:1px solid var(--line); color:var(--ink);
+  padding:12px 14px; border-radius:var(--radius-sm); font:500 14px 'Inter',sans-serif; }
+input:focus, select:focus { border-color:var(--brand); }
+label { font:600 12px 'Inter',sans-serif; color:var(--ink-soft); display:block; margin:0 0 6px; }
+.champ { margin-bottom:14px; }
+.deux-colonnes { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+
+/* ====== Toasts ====== */
+#toast-erreur, #toast-info {
+  position:fixed; top:0; left:0; right:0; z-index:200; text-align:center;
+  padding:10px 16px; font:600 13px 'Inter',sans-serif; display:none;
+}
+#toast-erreur { background:var(--red); color:#2B0A0A; }
+#toast-info { background:var(--teal); color:#04231A; }
+#banniere-connexion { position:fixed; top:0; left:0; right:0; z-index:150; text-align:center;
+  padding:10px 16px; font:600 13px 'Inter',sans-serif; display:none; background:var(--amber); color:#2B241D; }
+
+/* ====== Onboarding ====== */
+#ecran-onboarding { position:fixed; inset:0; z-index:300; background:var(--paper); display:none;
+  flex-direction:column; align-items:center; justify-content:center; padding:32px 26px; text-align:center; }
+#ecran-onboarding .emoji-slide { font-size:64px; margin-bottom:22px; }
+#ecran-onboarding h2 { font-size:24px; margin-bottom:10px; }
+#ecran-onboarding p { color:var(--ink-soft); font-size:14px; line-height:1.6; max-width:320px; }
+.dots { display:flex; gap:6px; margin:22px 0; }
+.dots span { width:7px; height:7px; border-radius:50%; background:var(--line); }
+.dots span.active { background:var(--brand); width:20px; border-radius:99px; transition:.2s; }
+.onboarding-actions { display:flex; justify-content:space-between; width:100%; max-width:320px; margin-top:6px; }
+
+/* ====== Auth ====== */
+#ecran-auth { min-height:100vh; display:flex; align-items:center; padding:32px 22px; position:relative; overflow:hidden; }
+.auth-box { width:100%; max-width:400px; margin:0 auto; position:relative; z-index:1; }
+.emblem { width:64px; height:64px; border-radius:20px; margin:0 auto 20px;
+  background:linear-gradient(135deg, var(--brand-soft) 0%, rgba(240,128,61,.06) 100%);
+  border:1px solid rgba(240,128,61,.35); display:flex; align-items:center; justify-content:center; }
+.auth-headline { text-align:center; margin-bottom:30px; }
+.auth-headline h1 { font-size:26px; line-height:1.25; }
+.auth-headline p { color:var(--ink-soft); font-size:13px; margin-top:8px; }
+.auth-card { background:var(--card); border:1px solid var(--line); border-radius:var(--radius); padding:22px;
+  box-shadow:var(--shadow), inset 0 1px 0 rgba(255,255,255,.1); backdrop-filter:blur(var(--blur)); }
+.auth-tabs { display:flex; gap:6px; background:rgba(255,255,255,.04); border:1px solid var(--line); border-radius:99px; padding:4px; margin-bottom:22px; }
+.auth-tab { flex:1; text-align:center; padding:10px; border-radius:99px; font:600 13px 'Inter',sans-serif; color:var(--ink-soft); cursor:pointer; }
+.auth-tab.active { background:var(--brand); color:#fff; }
+
+/* ====== Nav du bas ====== */
+#nav { position:fixed; bottom:0; left:0; right:0; z-index:50; display:flex;
+  background:rgba(11,13,10,.9); backdrop-filter:blur(18px); border-top:1px solid var(--line);
+  padding:8px 8px calc(8px + env(safe-area-inset-bottom)); }
+:root[data-theme="light"] #nav { background:rgba(246,244,238,.9); }
+.nav-tab { flex:1; display:flex; flex-direction:column; align-items:center; gap:3px; padding:6px; color:var(--ink-soft);
+  font:600 10px 'Inter',sans-serif; background:none; border:none; cursor:pointer; position:relative; }
+.nav-tab.active { color:var(--brand); }
+.nav-badge { position:absolute; top:0; right:22%; background:var(--brand); color:#fff; border-radius:99px;
+  font:700 9px 'Inter',sans-serif; min-width:15px; height:15px; display:flex; align-items:center; justify-content:center; padding:0 3px; }
+
+/* ====== Contenu ====== */
+main { max-width:560px; margin:0 auto; padding:14px 18px 100px; }
+.page { display:none; animation:fadeUp .25s ease both; }
+.page.active { display:block; }
+@keyframes fadeUp { from{opacity:0; transform:translateY(6px);} to{opacity:1; transform:none;} }
+
+header.top { padding:24px 18px 6px; }
+.top-row { max-width:560px; margin:0 auto; display:flex; justify-content:space-between; align-items:flex-start; }
+h1#titre-page { font-size:22px; }
+.avatar-btn { width:42px; height:42px; border-radius:50%; border:1px solid var(--line); cursor:pointer;
+  font:700 14px 'Inter',sans-serif; color:#fff; display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+
+/* ====== Hero accueil ====== */
+.hero-accueil { position:relative; overflow:hidden; border-radius:var(--radius); padding:22px 20px;
+  margin-bottom:16px; background:linear-gradient(160deg, rgba(240,128,61,.16) 0%, rgba(255,255,255,.03) 70%);
+  border:1px solid rgba(240,128,61,.22); }
+.hero-accueil .emblem { width:38px; height:38px; border-radius:12px; margin:0 0 12px; }
+.hero-accueil .emblem svg { width:18px; height:18px; }
+.hero-accueil h1 { font-size:21px; line-height:1.3; }
+.hero-accueil p { color:var(--ink-soft); font-size:12px; margin-top:6px; }
+
+/* ====== Recherche + catégories ====== */
+.barre-recherche { position:relative; margin-bottom:14px; }
+.barre-recherche input { padding-left:38px; }
+.barre-recherche::before { content:'🔎'; position:absolute; left:13px; top:50%; transform:translateY(-50%); font-size:14px; opacity:.6; }
+.chips { display:flex; gap:8px; overflow-x:auto; padding-bottom:4px; margin-bottom:16px; scrollbar-width:none; }
+.chips::-webkit-scrollbar { display:none; }
+.chip { flex-shrink:0; display:flex; flex-direction:column; align-items:center; gap:5px; cursor:pointer; }
+.chip-icone { width:52px; height:52px; border-radius:16px; background:var(--card); border:1px solid var(--line);
+  display:flex; align-items:center; justify-content:center; font-size:22px; transition:.15s; }
+.chip.active .chip-icone { background:linear-gradient(135deg, var(--brand) 0%, var(--brand-dark) 100%); border-color:transparent; }
+.chip span.chip-label { font:600 10px 'Inter',sans-serif; color:var(--ink-soft); }
+.chip.active span.chip-label { color:var(--brand); }
+
+/* ====== Bannière horaires ====== */
+.banniere-horaires { background:var(--amber-soft); border:1px solid rgba(251,191,36,.3); color:var(--amber-ink);
+  border-radius:var(--radius-sm); padding:10px 14px; font:600 12px 'Inter',sans-serif; margin-bottom:14px;
+  display:none; align-items:center; gap:8px; }
+
+/* ====== Produits ====== */
+.produit-card { display:flex; justify-content:space-between; align-items:center; gap:12px; position:relative; }
+.suggestion-epuise { font:600 11px 'Inter',sans-serif; color:var(--brand); margin-top:6px; cursor:pointer; text-decoration:underline; }
+.stepper { display:flex; align-items:center; gap:10px; }
+.stepper button { width:38px; height:38px; border-radius:50%; border:1px solid var(--line); background:var(--card);
+  color:var(--ink); font-size:18px; cursor:pointer; line-height:1; }
+.stepper span { min-width:18px; text-align:center; font-weight:700; }
+.produit-highlight { animation:pulseHighlight 1s ease; }
+@keyframes pulseHighlight { 0%,100%{box-shadow:var(--shadow), inset 0 1px 0 rgba(255,255,255,.14);} 40%{box-shadow:0 0 0 3px var(--brand);} }
+
+/* ====== Skeletons ====== */
+.skeleton-card { height:64px; border-radius:var(--radius); background:linear-gradient(90deg, var(--card) 25%, rgba(255,255,255,.09) 37%, var(--card) 63%);
+  background-size:400% 100%; animation:shimmer 1.4s ease infinite; margin-bottom:12px; }
+@keyframes shimmer { 0%{background-position:100% 0;} 100%{background-position:0 0;} }
+
+/* ====== +1 flottant ====== */
+.plus-un-volant { position:fixed; z-index:400; font:800 16px 'Inter',sans-serif; color:var(--brand); pointer-events:none;
+  animation:envoleePlus1 .7s ease forwards; }
+@keyframes envoleePlus1 { 0%{opacity:1; transform:translateY(0);} 100%{opacity:0; transform:translateY(-40px);} }
+
+/* ====== Barre panier flottante ====== */
+#barre-panier { position:fixed; left:16px; right:16px; bottom:84px; z-index:40;
+  background:linear-gradient(135deg, var(--brand) 0%, var(--brand-dark) 100%); border-radius:var(--radius);
+  padding:14px 18px; display:none; align-items:center; justify-content:space-between; cursor:pointer;
+  box-shadow:0 12px 30px -8px rgba(240,128,61,.55); color:#fff; font-weight:700; }
+
+/* ====== Statut en frise ====== */
+.frise-statut { display:flex; align-items:center; margin:14px 0 4px; }
+.frise-etape { flex:1; display:flex; flex-direction:column; align-items:center; gap:6px; position:relative; }
+.frise-etape::before { content:''; position:absolute; top:15px; left:-50%; width:100%; height:2px; background:var(--line); z-index:0; }
+.frise-etape:first-child::before { display:none; }
+.frise-etape.fait::before { background:var(--brand); }
+.frise-cercle { width:30px; height:30px; border-radius:50%; background:var(--card); border:1px solid var(--line);
+  display:flex; align-items:center; justify-content:center; font-size:14px; z-index:1; }
+.frise-etape.fait .frise-cercle { background:var(--brand); border-color:var(--brand); }
+.frise-etape.actif .frise-cercle { animation:pulseActif 1.5s ease infinite; }
+@keyframes pulseActif { 0%,100%{box-shadow:0 0 0 0 rgba(240,128,61,.5);} 50%{box-shadow:0 0 0 6px rgba(240,128,61,0);} }
+.frise-label { font:600 9px 'Inter',sans-serif; color:var(--ink-soft); text-align:center; }
+.frise-etape.fait .frise-label, .frise-etape.actif .frise-label { color:var(--ink); }
+
+/* ====== Bannière A2HS ====== */
+.banniere-a2hs { background:var(--card); border:1px solid var(--line); border-radius:var(--radius-sm); padding:14px;
+  font:12px/1.5 'Inter',sans-serif; color:var(--ink-soft); margin-top:14px; position:relative; }
+.banniere-a2hs button.fermer { position:absolute; top:8px; right:10px; background:none; border:none; color:var(--ink-soft); font-size:16px; cursor:pointer; }
+</style>
+</head>
+<body>
+
+<div id="banniere-connexion"></div>
+<div id="toast-erreur"></div>
+<div id="toast-info"></div>
+
+<!-- ====== ONBOARDING ====== -->
+<div id="ecran-onboarding">
+  <div class="emoji-slide" id="onb-emoji">🍽️</div>
+  <h2 id="onb-titre">Titre</h2>
+  <p id="onb-texte">Texte</p>
+  <div class="dots" id="onb-dots"></div>
+  <div class="onboarding-actions">
+    <button class="btn" onclick="passerOnboarding()">Passer</button>
+    <button class="btn primary" id="onb-suivant" onclick="onboardingSuivant()">Suivant</button>
+  </div>
+</div>
+
+<!-- ====== ÉCRAN AUTHENTIFICATION ====== -->
+<div id="ecran-auth">
+  <div class="particules">
+    <span class="particule" style="top:12%; left:20%; animation-delay:0s;"></span>
+    <span class="particule" style="top:22%; left:78%; animation-delay:.8s;"></span>
+    <span class="particule" style="top:8%; left:55%; animation-delay:1.6s;"></span>
+    <span class="particule" style="top:34%; left:12%; animation-delay:2.4s;"></span>
+    <span class="particule" style="top:30%; left:88%; animation-delay:1.1s;"></span>
+  </div>
+  <div class="auth-box">
+    <div class="emblem">
+      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#F0803D" stroke-width="1.6"><path d="M6 2v7a2 2 0 0 0 2 2v11M6 2v20M6 2v0M18 2v20M18 2a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2"/></svg>
+    </div>
+    <div class="auth-headline">
+      <div class="eyebrow" style="justify-content:center;">Cité Express</div>
+      <h1>Commande <em>depuis ta chambre</em></h1>
+      <p>Catalogue du jour, suivi en direct, livré à ta porte.</p>
+    </div>
+
+    <div class="auth-card">
+      <div class="auth-tabs">
+        <div class="auth-tab active" data-tab="connexion" onclick="basculerAuth('connexion')">Connexion</div>
+        <div class="auth-tab" data-tab="inscription" onclick="basculerAuth('inscription')">Créer un compte</div>
+      </div>
+
+      <form id="form-connexion" onsubmit="return soumettreConnexion(event)">
+        <div class="champ">
+          <label>Numéro de téléphone</label>
+          <input type="tel" id="co-telephone" required placeholder="07 00 00 00 00" oninput="formaterTelephone(this)">
+        </div>
+        <div class="champ">
+          <label>Mot de passe</label>
+          <input type="password" id="co-mdp" required placeholder="••••••">
+        </div>
+        <button class="btn primary full" type="submit">Se connecter</button>
+      </form>
+
+      <form id="form-inscription" style="display:none;" onsubmit="return soumettreInscription(event)">
+        <div class="champ">
+          <label>Nom</label>
+          <input type="text" id="in-nom" required placeholder="Ton nom">
+        </div>
+        <div class="champ">
+          <label>Numéro de téléphone</label>
+          <input type="tel" id="in-telephone" required placeholder="07 00 00 00 00" oninput="formaterTelephone(this)">
+        </div>
+        <div class="champ">
+          <label>Mot de passe (4 caractères min.)</label>
+          <input type="password" id="in-mdp" required minlength="4" placeholder="••••••">
+        </div>
+        <div class="deux-colonnes">
+          <div class="champ">
+            <label>Résidence</label>
+            <select id="in-residence" required></select>
+          </div>
+          <div class="champ">
+            <label>N° de chambre</label>
+            <input type="text" id="in-chambre" required placeholder="Ex: B12">
+          </div>
+        </div>
+        <button class="btn primary full" type="submit">Créer mon compte</button>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- ====== APP (après connexion) ====== -->
+<div id="app" style="display:none;">
+  <header class="top">
+    <div class="top-row">
+      <div>
+        <div class="eyebrow">Cité Express</div>
+        <h1 id="titre-page">Catalogue</h1>
+      </div>
+      <button class="avatar-btn" id="avatar-btn" onclick="allerA('profil')"></button>
+    </div>
+  </header>
+
+  <main>
+    <section class="page active" id="page-catalogue"></section>
+    <section class="page" id="page-panier"></section>
+    <section class="page" id="page-commandes"></section>
+    <section class="page" id="page-profil"></section>
+  </main>
+</div>
+
+<div id="barre-panier" onclick="allerA('panier')"></div>
+
+<nav id="nav" style="display:none;">
+  <button class="nav-tab active" data-page="catalogue" onclick="allerA('catalogue')">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4Z"/><path d="M3 6h18"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>
+    Catalogue
+  </button>
+  <button class="nav-tab" data-page="commandes" onclick="allerA('commandes')" style="position:relative;">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m7.5 4.27 9 5.15"/><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg>
+    Commandes
+    <span class="nav-badge" id="badge-commandes" style="display:none;"></span>
+  </button>
+  <button class="nav-tab" data-page="profil" onclick="allerA('profil')">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M20 21a8 8 0 0 0-16 0"/></svg>
+    Profil
+  </button>
+</nav>
+
+<script>
+// ====== CONNEXION AU BACKEND ======
+const API_BASE = "https://livraison-backend-k9sy.onrender.com";
+
+// ====== CONFIG À AJUSTER SELON TES VRAIS HORAIRES ======
+const HORAIRES = { ouverture: 8, fermeture: 23 }; // heures locales, 24h
+
+async function api(path, method = "GET", body = null, tentative = 1) {
+  let res;
+  try {
+    res = await fetch(API_BASE + path, {
+      method,
+      headers: body ? { "Content-Type": "application/json" } : {},
+      body: body ? JSON.stringify(body) : null,
+    });
+  } catch (erreurReseau) {
+    if (tentative < 3) {
+      afficherBanniereConnexion(`Connexion au serveur... (tentative ${tentative + 1}/3)`);
+      await new Promise(r => setTimeout(r, 1500));
+      return api(path, method, body, tentative + 1);
+    }
+    afficherBanniereConnexion("Connexion perdue — nouvelle tentative dans quelques secondes.");
+    throw new Error("Impossible de joindre le serveur. Vérifie ta connexion.");
+  }
+  masquerBanniereConnexion();
+  if (!res.ok) {
+    const erreur = await res.json().catch(() => ({}));
+    let message = "Erreur serveur";
+    if (typeof erreur.detail === "string") message = erreur.detail;
+    else if (Array.isArray(erreur.detail)) message = erreur.detail.map(d => `${d.loc?.slice(-1)[0] || ''} : ${d.msg}`).join(" | ");
+    throw new Error(message);
+  }
+  return res.status === 204 ? null : res.json();
+}
+
+function afficherBanniereConnexion(texte) {
+  const el = document.getElementById('banniere-connexion');
+  el.textContent = texte; el.style.display = 'block';
+}
+function masquerBanniereConnexion() {
+  document.getElementById('banniere-connexion').style.display = 'none';
+}
+function afficherErreur(msg) {
+  const el = document.getElementById('toast-erreur');
+  el.textContent = msg; el.style.display = 'block';
+  setTimeout(() => el.style.display = 'none', 4000);
+}
+function afficherInfo(msg) {
+  const el = document.getElementById('toast-info');
+  el.textContent = msg; el.style.display = 'block';
+  setTimeout(() => el.style.display = 'none', 4000);
+}
+function vibrer(motif) {
+  if (!navigator.vibrate) return;
+  const motifs = { court: 40, moyen: 120, long: [60, 40, 60] };
+  navigator.vibrate(motifs[motif] || 60);
+}
+
+// ====== ÉTAT ======
+let client = null;
+let catalogue = [];
+let panier = [];
+let commandes = [];
+let statutsPrecedents = {};   // pour détecter les changements de statut entre deux sondages
+let sondage = null;
+let categorieActive = 'Tout';
+let rechercheTexte = '';
+
+const RESIDENCES = Array.from({length: 16}, (_, i) => i + 1);
+
+const ICONES_CATEGORIE = {
+  plat: '🍽️', plats: '🍽️', boisson: '🥤', boissons: '🥤', snack: '🍟', snacks: '🍟',
+  dessert: '🍰', desserts: '🍰', entree: '🥗', entrée: '🥗', petit_dejeuner: '🥐',
+};
+function iconeCategorie(cat) { return ICONES_CATEGORIE[(cat || '').toLowerCase().trim()] || '🍴'; }
+
+const MESSAGES_PANIER_VIDE = [
+  "Ton ventre attend tes ordres 😄",
+  "Rien dans le panier... encore le temps de se décider !",
+  "Un petit creux ? Le catalogue t'attend.",
+  "Panier vide — mais pas pour longtemps j'espère.",
+];
+
+const ETAPES_STATUT = [
+  { cle: 'en_attente', icone: '📝', label: 'Reçue' },
+  { cle: 'assignee', icone: '👨‍🍳', label: 'Assignée' },
+  { cle: 'en_livraison', icone: '🛵', label: 'En route' },
+  { cle: 'livree', icone: '✅', label: 'Livrée' },
+];
+
+// ====== DÉMARRAGE ======
+window.addEventListener('DOMContentLoaded', init);
+
+async function init() {
+  document.getElementById('in-residence').innerHTML =
+    RESIDENCES.map(r => `<option value="${r}">Résidence ${r}</option>`).join('');
+
+  // thème & confort visuel sauvegardés
+  document.documentElement.setAttribute('data-theme', localStorage.getItem('cite_express_theme') || 'dark');
+  document.body.classList.toggle('grand-texte', localStorage.getItem('cite_express_grand_texte') === '1');
+
+  const sauvegarde = localStorage.getItem('cite_express_client_id');
+  if (!sauvegarde) {
+    if (!localStorage.getItem('cite_express_onboarding_vu')) afficherOnboarding();
+    return;
+  }
+  try {
+    client = await api(`/clients/${sauvegarde}`);
+    demarrerApp();
+  } catch {
+    localStorage.removeItem('cite_express_client_id');
+    if (!localStorage.getItem('cite_express_onboarding_vu')) afficherOnboarding();
+  }
+}
+
+// ====== ONBOARDING ======
+const SLIDES_ONBOARDING = [
+  { emoji: '🍽️', titre: 'Commande en un tap', texte: "Parcours le catalogue et compose ta commande directement depuis ta chambre." },
+  { emoji: '📍', titre: 'Suis ta livraison', texte: "Suis chaque étape en direct : prise en charge, départ, arrivée." },
+  { emoji: '🛵', titre: 'Livré chez toi', texte: "Paiement cash à la réception, livré directement dans ta chambre." },
+];
+let slideActuelle = 0;
+
+function afficherOnboarding() {
+  document.getElementById('ecran-onboarding').style.display = 'flex';
+  document.getElementById('onb-dots').innerHTML = SLIDES_ONBOARDING.map((_, i) => `<span class="${i === 0 ? 'active' : ''}"></span>`).join('');
+  rendreSlide();
+}
+function rendreSlide() {
+  const s = SLIDES_ONBOARDING[slideActuelle];
+  document.getElementById('onb-emoji').textContent = s.emoji;
+  document.getElementById('onb-titre').textContent = s.titre;
+  document.getElementById('onb-texte').textContent = s.texte;
+  document.querySelectorAll('#onb-dots span').forEach((d, i) => d.classList.toggle('active', i === slideActuelle));
+  document.getElementById('onb-suivant').textContent = slideActuelle === SLIDES_ONBOARDING.length - 1 ? 'Commencer' : 'Suivant';
+}
+function onboardingSuivant() {
+  if (slideActuelle < SLIDES_ONBOARDING.length - 1) { slideActuelle++; rendreSlide(); }
+  else passerOnboarding();
+}
+function passerOnboarding() {
+  localStorage.setItem('cite_express_onboarding_vu', '1');
+  document.getElementById('ecran-onboarding').style.display = 'none';
+}
+
+// ====== AUTH ======
+function basculerAuth(onglet) {
+  document.querySelectorAll('.auth-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === onglet));
+  document.getElementById('form-connexion').style.display = onglet === 'connexion' ? 'block' : 'none';
+  document.getElementById('form-inscription').style.display = onglet === 'inscription' ? 'block' : 'none';
+}
+
+function formaterTelephone(input) {
+  let chiffres = input.value.replace(/\D/g, '').slice(0, 10);
+  input.value = chiffres.replace(/(\d{2})(?=\d)/g, '$1 ').trim();
+}
+
+async function soumettreConnexion(e) {
+  e.preventDefault();
+  try {
+    client = await api('/clients/login', 'POST', {
+      telephone: document.getElementById('co-telephone').value.replace(/\s/g, ''),
+      mot_de_passe: document.getElementById('co-mdp').value,
+    });
+    localStorage.setItem('cite_express_client_id', client.id);
+    demarrerApp();
+  } catch (err) { afficherErreur(err.message); }
+  return false;
+}
+
+async function soumettreInscription(e) {
+  e.preventDefault();
+  try {
+    client = await api('/clients/inscription', 'POST', {
+      nom: document.getElementById('in-nom').value,
+      telephone: document.getElementById('in-telephone').value.replace(/\s/g, ''),
+      mot_de_passe: document.getElementById('in-mdp').value,
+      residence: Number(document.getElementById('in-residence').value),
+      numero_chambre: document.getElementById('in-chambre').value,
+    });
+    localStorage.setItem('cite_express_client_id', client.id);
+    demarrerApp();
+  } catch (err) { afficherErreur(err.message); }
+  return false;
+}
+
+function deconnexion() {
+  localStorage.removeItem('cite_express_client_id');
+  if (sondage) clearInterval(sondage);
+  client = null; panier = []; commandes = []; statutsPrecedents = {};
+  document.getElementById('app').style.display = 'none';
+  document.getElementById('nav').style.display = 'none';
+  document.getElementById('ecran-auth').style.display = 'flex';
+}
+
+async function demarrerApp() {
+  document.getElementById('ecran-onboarding').style.display = 'none';
+  document.getElementById('ecran-auth').style.display = 'none';
+  document.getElementById('app').style.display = 'block';
+  document.getElementById('nav').style.display = 'flex';
+  rendreAvatar();
+  await Promise.all([chargerCatalogue(), chargerCommandes()]);
+  allerA('catalogue');
+  sondage = setInterval(() => { if (commandes.some(c => c.statut !== 'livree')) chargerCommandes(); }, 20000);
+}
+
+// ====== AVATAR ======
+function initiales(nom) {
+  const mots = (nom || '?').trim().split(/\s+/);
+  return (mots[0]?.[0] || '') .concat(mots[1]?.[0] || '').toUpperCase() || '?';
+}
+function couleurAvatar(id) {
+  const teinte = ((Number(id) || 0) * 47) % 360;
+  return `hsl(${teinte} 55% 42%)`;
+}
+function rendreAvatar() {
+  const btn = document.getElementById('avatar-btn');
+  btn.textContent = initiales(client.nom);
+  btn.style.background = couleurAvatar(client.id);
+}
+
+// ====== SALUTATION DYNAMIQUE ======
+function salutation() {
+  const h = new Date().getHours();
+  if (h < 12) return 'Bonjour';
+  if (h < 18) return 'Bon après-midi';
+  return 'Bonsoir';
+}
+
+// ====== NAVIGATION ======
+function allerA(page) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.getElementById('page-' + page).classList.add('active');
+  document.querySelectorAll('.nav-tab').forEach(t => t.classList.toggle('active', t.dataset.page === page));
+
+  const prenom = (client?.nom || '').split(' ')[0];
+  const titres = {
+    catalogue: 'Cité Express',
+    panier: 'Ma commande',
+    commandes: 'Mes commandes',
+    profil: 'Mon profil',
+  };
+  document.getElementById('titre-page').textContent = titres[page] || '';
+  document.getElementById('barre-panier').style.display = (page === 'catalogue' && panier.length) ? 'flex' : 'none';
+  if (page === 'panier') rendrePanier();
+  if (page === 'commandes') rendreCommandes();
+  if (page === 'profil') rendreProfil();
+}
+
+// ====== HORAIRES ======
+function etatHoraires() {
+  const maintenant = new Date();
+  const h = maintenant.getHours() + maintenant.getMinutes() / 60;
+  if (h < HORAIRES.ouverture || h >= HORAIRES.fermeture) {
+    return { ouvert: false, texte: `😴 Fermé pour le moment — réouverture à ${HORAIRES.ouverture}h` };
+  }
+  const minutesAvantFermeture = Math.round((HORAIRES.fermeture - h) * 60);
+  if (minutesAvantFermeture <= 45) {
+    const heures = Math.floor(minutesAvantFermeture / 60), min = minutesAvantFermeture % 60;
+    return { ouvert: true, texte: `⏰ Fermeture dans ${heures > 0 ? heures + 'h' : ''}${min}min` };
+  }
+  return { ouvert: true, texte: null };
+}
+
+// ====== CATALOGUE ======
+async function chargerCatalogue() {
+  const zone = document.getElementById('page-catalogue');
+  if (!catalogue.length) zone.innerHTML = Array(4).fill('<div class="skeleton-card"></div>').join('');
+  try {
+    catalogue = await api('/catalogue');
+    rendreCatalogue();
+  } catch (err) { afficherErreur(err.message); }
+}
+
+function categoriesDisponibles() {
+  const set = new Set(catalogue.map(p => p.categorie).filter(Boolean));
+  return ['Tout', ...set];
+}
+
+function rendreCatalogue() {
+  const zone = document.getElementById('page-catalogue');
+  const horaire = etatHoraires();
+  const prenom = (client?.nom || '').split(' ')[0];
+
+  let html = `
+    <div class="hero-accueil">
+      <div class="emblem">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#F0803D" stroke-width="1.8"><path d="M6 2v7a2 2 0 0 0 2 2v11M6 2v20M18 2v20M18 2a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2"/></svg>
+      </div>
+      <h1>${salutation()}, <em>${prenom}</em> 👋</h1>
+      <p>Choisis ton plat, on s'occupe du reste.</p>
+    </div>`;
+
+  if (horaire.texte) html += `<div class="banniere-horaires" style="display:flex;">${horaire.texte}</div>`;
+
+  html += `<div class="barre-recherche champ"><input type="text" placeholder="Chercher un plat..." value="${rechercheTexte}" oninput="rechercheTexte=this.value; rendreCatalogue();"></div>`;
+
+  const cats = categoriesDisponibles();
+  if (cats.length > 2) {
+    html += `<div class="chips">${cats.map(c => `
+      <div class="chip ${categorieActive === c ? 'active' : ''}" onclick="categorieActive='${c.replace(/'/g, "\\'")}'; rendreCatalogue();">
+        <div class="chip-icone">${c === 'Tout' ? '🍴' : iconeCategorie(c)}</div>
+        <span class="chip-label">${c}</span>
+      </div>`).join('')}</div>`;
+  }
+
+  let visibles = catalogue.filter(p =>
+    (categorieActive === 'Tout' || p.categorie === categorieActive) &&
+    p.nom.toLowerCase().includes(rechercheTexte.toLowerCase())
+  );
+
+  if (!visibles.length) {
+    html += `<div class="empty"><span class="emoji-empty">🔍</span>Aucun produit ne correspond.</div>`;
+  } else {
+    html += visibles.map(p => {
+      const epuise = p.stock_restant <= 0;
+      const dansPanier = panier.find(x => x.produit_id === p.id);
+      const qte = dansPanier ? dansPanier.qte : 0;
+      let suggestionHtml = '';
+      if (epuise) {
+        const alternative = catalogue.find(x => x.categorie === p.categorie && x.id !== p.id && x.stock_restant > 0);
+        if (alternative) suggestionHtml = `<div class="suggestion-epuise" onclick="mettreEnValeur(${alternative.id})">→ Essaie plutôt ${alternative.nom}</div>`;
+      }
+      return `
+      <div class="card produit-card" id="produit-${p.id}">
+        <div>
+          <div class="name">${p.nom}</div>
+          <div class="meta">${p.prix} FCFA ${p.categorie ? '· ' + p.categorie : ''}</div>
+          ${epuise ? '<span class="badge badge-epuise" style="margin-top:6px;">Épuisé</span>' + suggestionHtml
+                   : (p.stock_restant <= 5 ? `<span class="badge badge-attente" style="margin-top:6px;">Plus que ${p.stock_restant}</span>` : '')}
+        </div>
+        ${epuise ? '' : `
+        <div class="stepper">
+          <button onclick="changerQte(${p.id}, -1)" ${qte === 0 ? 'disabled' : ''}>–</button>
+          <span>${qte}</span>
+          <button onclick="changerQte(${p.id}, 1, event)">+</button>
+        </div>`}
+      </div>`;
+    }).join('');
+  }
+
+  zone.innerHTML = html;
+}
+
+function mettreEnValeur(produitId) {
+  const el = document.getElementById('produit-' + produitId);
+  if (!el) return;
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  el.classList.add('produit-highlight');
+  setTimeout(() => el.classList.remove('produit-highlight'), 1000);
+}
+
+function envolerPlusUn(evenement) {
+  if (!evenement) return;
+  const span = document.createElement('span');
+  span.className = 'plus-un-volant';
+  span.textContent = '+1';
+  span.style.left = (evenement.clientX - 8) + 'px';
+  span.style.top = (evenement.clientY - 20) + 'px';
+  document.body.appendChild(span);
+  setTimeout(() => span.remove(), 700);
+}
+
+function changerQte(produitId, delta, evenement) {
+  const produit = catalogue.find(p => p.id === produitId);
+  let item = panier.find(x => x.produit_id === produitId);
+  if (!item) {
+    if (delta < 0) return;
+    item = { produit_id: produitId, nom: produit.nom, prix: produit.prix, qte: 0 };
+    panier.push(item);
+  }
+  item.qte = Math.max(0, Math.min(produit.stock_restant, item.qte + delta));
+  panier = panier.filter(x => x.qte > 0);
+  if (delta > 0) { vibrer('court'); envolerPlusUn(evenement); }
+  rendreCatalogue();
+  document.getElementById('barre-panier').style.display = panier.length ? 'flex' : 'none';
+  const total = panier.reduce((s, x) => s + x.qte * x.prix, 0);
+  document.getElementById('barre-panier').innerHTML =
+    `<span>🛒 ${panier.reduce((s, x) => s + x.qte, 0)} article(s)</span><span>${total} FCFA →</span>`;
+}
+
+// ====== PANIER / CHECKOUT ======
+function rendrePanier() {
+  const zone = document.getElementById('page-panier');
+  if (!panier.length) {
+    const message = MESSAGES_PANIER_VIDE[Math.floor(Math.random() * MESSAGES_PANIER_VIDE.length)];
+    zone.innerHTML = `<div class="empty"><span class="emoji-empty">🛒</span>${message}</div><button class="btn full" onclick="allerA('catalogue')">Voir le catalogue</button>`;
+    return;
+  }
+  const total = panier.reduce((s, x) => s + x.qte * x.prix, 0);
+  zone.innerHTML = `
+    <div class="s-title">Articles</div>
+    ${panier.map(x => `
+      <div class="card row">
+        <div>
+          <div class="name">${x.nom}</div>
+          <div class="meta">${x.qte} × ${x.prix} FCFA</div>
+        </div>
+        <div class="stepper">
+          <button onclick="changerQte(${x.produit_id}, -1); rendrePanier();">–</button>
+          <span>${x.qte}</span>
+          <button onclick="changerQte(${x.produit_id}, 1); rendrePanier();">+</button>
+        </div>
+      </div>`).join('')}
+
+    <div class="card row" style="margin-top:16px;">
+      <span class="name">Total</span>
+      <span class="montant">${total} FCFA</span>
+    </div>
+
+    <div class="s-title" style="margin-top:20px;">Livrer à</div>
+    <div class="card">
+      <div class="deux-colonnes">
+        <div class="champ">
+          <label>Résidence</label>
+          <select id="pa-residence">${RESIDENCES.map(r => `<option value="${r}" ${client.residence == r ? 'selected' : ''}>Résidence ${r}</option>`).join('')}</select>
+        </div>
+        <div class="champ">
+          <label>N° de chambre</label>
+          <input type="text" id="pa-chambre" value="${client.numero_chambre || ''}">
+        </div>
+      </div>
+    </div>
+
+    <div class="s-title" style="margin-top:20px;">Paiement</div>
+    <div class="card row">
+      <div class="row" style="gap:10px;"><span style="font-size:20px;">💵</span><span class="name">Cash à la livraison</span></div>
+      <span class="badge badge-livree">Sélectionné</span>
+    </div>
+
+    <button class="btn primary full" style="margin-top:16px;" onclick="validerCommande()" id="btn-valider">Confirmer la commande</button>
+  `;
+}
+
+async function validerCommande() {
+  const residence = Number(document.getElementById('pa-residence').value);
+  const chambre = document.getElementById('pa-chambre').value.trim();
+  if (!chambre) { afficherErreur('Le numéro de chambre est obligatoire'); return; }
+
+  const btn = document.getElementById('btn-valider');
+  btn.disabled = true; btn.textContent = 'Envoi en cours...';
+
+  try {
+    for (const item of panier) {
+      await api(`/clients/${client.id}/commandes`, 'POST', {
+        produit_id: item.produit_id, qte: item.qte, residence, numero_chambre: chambre,
+      });
+    }
+    vibrer('long');
+    panier = [];
+    document.getElementById('barre-panier').style.display = 'none';
+    await Promise.all([chargerCatalogue(), chargerCommandes()]);
+    allerA('commandes');
+  } catch (err) {
+    afficherErreur(err.message);
+    btn.disabled = false; btn.textContent = 'Confirmer la commande';
+  }
+}
+
+function repeterCommande(commandeId) {
+  const c = commandes.find(x => x.id === commandeId);
+  if (!c) return;
+  const produit = catalogue.find(p => p.id === c.produit_id);
+  if (!produit || produit.stock_restant <= 0) { afficherErreur("Ce produit n'est plus disponible pour le moment."); return; }
+  changerQte(c.produit_id, Math.min(c.qte, produit.stock_restant));
+  allerA('panier');
+}
+
+// ====== MES COMMANDES ======
+async function chargerCommandes() {
+  try {
+    const nouvelles = await api(`/clients/${client.id}/commandes`);
+    detecterChangementsStatut(nouvelles);
+    commandes = nouvelles;
+    const enCours = commandes.filter(c => c.statut !== 'livree').length;
+    const badge = document.getElementById('badge-commandes');
+    if (enCours) { badge.textContent = enCours; badge.style.display = 'flex'; }
+    else badge.style.display = 'none';
+    if (document.getElementById('page-commandes').classList.contains('active')) rendreCommandes();
+  } catch (err) { afficherErreur(err.message); }
+}
+
+function detecterChangementsStatut(nouvelles) {
+  const MESSAGES_STATUT = {
+    assignee: "👨‍🍳 Un livreur est assigné à ta commande",
+    en_livraison: "🛵 Ton livreur est en route !",
+    livree: "✅ Commande livrée, bon appétit !",
+  };
+  for (const c of nouvelles) {
+    const avant = statutsPrecedents[c.id];
+    if (avant && avant !== c.statut && MESSAGES_STATUT[c.statut]) {
+      afficherInfo(MESSAGES_STATUT[c.statut]);
+      vibrer('moyen');
+    }
+    statutsPrecedents[c.id] = c.statut;
+  }
+}
+
+function rendreCommandes() {
+  const zone = document.getElementById('page-commandes');
+  if (!commandes.length) { zone.innerHTML = '<div class="empty"><span class="emoji-empty">📦</span>Aucune commande pour l\'instant.</div>'; return; }
+  zone.innerHTML = commandes.map(c => {
+    const produit = catalogue.find(p => p.id === c.produit_id);
+    const indexActuel = ETAPES_STATUT.findIndex(e => e.cle === c.statut);
+    const frise = ETAPES_STATUT.map((e, i) => `
+      <div class="frise-etape ${i < indexActuel ? 'fait' : ''} ${i === indexActuel ? 'actif fait' : ''}">
+        <div class="frise-cercle">${e.icone}</div>
+        <div class="frise-label">${e.label}</div>
+      </div>`).join('');
+    return `
+    <div class="card">
+      <div class="row">
+        <div class="name">${produit ? produit.nom : 'Produit'} × ${c.qte}</div>
+        ${c.statut === 'livree' ? `<button class="btn small" onclick="repeterCommande(${c.id})">↻ Répéter</button>` : ''}
+      </div>
+      <div class="meta" style="margin-top:6px;">${c.adresse}</div>
+      <div class="meta">${new Date(c.date_creation).toLocaleString('fr-FR', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' })}</div>
+      ${c.probleme_motif ? `<div class="meta" style="color:var(--red-ink); margin-top:4px;">⚠ ${c.probleme_motif}</div>` : ''}
+      <div class="frise-statut">${frise}</div>
+    </div>`;
+  }).join('');
+}
+
+// ====== PROFIL ======
+function estIOSNavigateurNormal() {
+  const estIOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
+  const estAutonome = window.navigator.standalone === true;
+  return estIOS && !estAutonome;
+}
+
+function commandesCeMois() {
+  const maintenant = new Date();
+  return commandes.filter(c => {
+    const d = new Date(c.date_creation);
+    return d.getMonth() === maintenant.getMonth() && d.getFullYear() === maintenant.getFullYear();
+  }).length;
+}
+
+function rendreProfil() {
+  const zone = document.getElementById('page-profil');
+  const themeActuel = document.documentElement.getAttribute('data-theme') || 'dark';
+  const grandTexteActif = document.body.classList.contains('grand-texte');
+  const bannierevue = localStorage.getItem('cite_express_a2hs_vue') === '1';
+
+  zone.innerHTML = `
+    <div class="card row">
+      <div class="row" style="gap:10px;">
+        <div class="avatar-btn" style="background:${couleurAvatar(client.id)};">${initiales(client.nom)}</div>
+        <div>
+          <div class="name">${client.nom}</div>
+          <div class="meta">${commandesCeMois()} commande(s) ce mois-ci</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="champ"><label>Nom</label><input type="text" id="pr-nom" value="${client.nom}"></div>
+      <div class="champ"><label>Téléphone</label><input type="text" value="${client.telephone}" disabled></div>
+      <div class="deux-colonnes">
+        <div class="champ">
+          <label>Résidence</label>
+          <select id="pr-residence">${RESIDENCES.map(r => `<option value="${r}" ${client.residence == r ? 'selected' : ''}>Résidence ${r}</option>`).join('')}</select>
+        </div>
+        <div class="champ"><label>N° de chambre</label><input type="text" id="pr-chambre" value="${client.numero_chambre || ''}"></div>
+      </div>
+      <button class="btn primary full" onclick="enregistrerProfil()">Enregistrer</button>
+    </div>
+
+    <div class="card">
+      <div class="row">
+        <span class="name">Mode sombre</span>
+        <input type="checkbox" id="toggle-theme" ${themeActuel === 'dark' ? 'checked' : ''} onchange="basculerTheme(this.checked)" style="width:auto;">
+      </div>
+      <div class="row">
+        <span class="name">Grand texte</span>
+        <input type="checkbox" id="toggle-texte" ${grandTexteActif ? 'checked' : ''} onchange="basculerGrandTexte(this.checked)" style="width:auto;">
+      </div>
+    </div>
+
+    ${estIOSNavigateurNormal() && !bannierevue ? `
+    <div class="banniere-a2hs">
+      <button class="fermer" onclick="fermerBanniereA2HS()">✕</button>
+      📲 Ajoute Cité Express à ton écran d'accueil : appuie sur <strong>Partager</strong> puis <strong>« Sur l'écran d'accueil »</strong>.
+    </div>` : ''}
+
+    <button class="btn full" style="margin-top:14px;" onclick="deconnexion()">Se déconnecter</button>
+  `;
+}
+
+function basculerTheme(sombre) {
+  const theme = sombre ? 'dark' : 'light';
+  document.documentElement.setAttribute('data-theme', theme);
+  localStorage.setItem('cite_express_theme', theme);
+}
+function basculerGrandTexte(actif) {
+  document.body.classList.toggle('grand-texte', actif);
+  localStorage.setItem('cite_express_grand_texte', actif ? '1' : '0');
+}
+function fermerBanniereA2HS() {
+  localStorage.setItem('cite_express_a2hs_vue', '1');
+  rendreProfil();
+}
+
+async function enregistrerProfil() {
+  try {
+    client = await api(`/clients/${client.id}`, 'PATCH', {
+      nom: document.getElementById('pr-nom').value,
+      residence: Number(document.getElementById('pr-residence').value),
+      numero_chambre: document.getElementById('pr-chambre').value,
+    });
+    rendreAvatar();
+    vibrer('court');
+  } catch (err) { afficherErreur(err.message); }
+}
+</script>
+</body>
+</html>
